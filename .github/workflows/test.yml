@@ -28,7 +28,7 @@ jobs:
         os: [macos-13, macos-14, macos-15, ubuntu-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Show environment
         run: |
@@ -80,7 +80,7 @@ jobs:
       matrix:
         os: [macos-14]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install jq
         run: |
           if ! command -v jq >/dev/null 2>&1; then
