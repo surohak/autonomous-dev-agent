@@ -11,6 +11,9 @@ source "$SKILL_DIR/scripts/lib/cfg.sh"
 source "$SKILL_DIR/scripts/lib/telegram.sh"
 source "$SKILL_DIR/scripts/lib/jira.sh"
 source "$SKILL_DIR/scripts/lib/workflow.sh"
+# Tempo is optional — source only if configured so installs without Tempo
+# still get a clean digest.
+[[ -f "$SKILL_DIR/scripts/lib/tempo.sh" ]] && source "$SKILL_DIR/scripts/lib/tempo.sh"
 # ---------------------------------------------------------------------------
 
 TODAY=$(date +%Y-%m-%d)
@@ -84,17 +87,82 @@ else
 Open MRs: None"
 fi
 
+# --- v0.5.0 — Tempo total-vs-tracked delta ---------------------------------
+# Reads today's worklogs (if Tempo is configured) and compares against the
+# daily target (owner.dailyWorkSeconds, default 8h = 28800). Emits a delta
+# line + a separate inline card with a [Backfill <delta>] button when the
+# user is under target. One tap triggers tempo_post_worklog against the
+# last ticket they were on.
+TEMPO_SECTION=""
+TEMPO_BACKFILL_DELTA=0
+TEMPO_BACKFILL_TICKET=""
+if [[ -n "${TEMPO_API_TOKEN:-}" ]] && [[ -n "${JIRA_ACCOUNT_ID:-}" ]] && type tempo_list_worklogs >/dev/null 2>&1; then
+  _tempo_raw=$(tempo_list_worklogs "$JIRA_ACCOUNT_ID" "$TODAY" "$TODAY" 2>/dev/null || echo '{"results":[]}')
+  _tempo_parsed=$(TARGET="${OWNER_DAILY_WORK_SECONDS:-28800}" RAW="$_tempo_raw" python3 <<'PY'
+import json, os
+try:
+    d = json.loads(os.environ["RAW"] or "{}")
+except Exception:
+    d = {}
+rows = d.get("results") or d.get("worklogs") or []
+total = 0
+last_ticket = ""
+last_ts = 0
+for r in rows:
+    secs = int(r.get("timeSpentSeconds") or 0)
+    total += secs
+    # Track the most recently updated worklog so the backfill button can
+    # default to that ticket.
+    key = ((r.get("issue") or {}).get("key")
+           or (r.get("issue") or {}).get("issueKey") or "")
+    started = r.get("startDate","") + " " + (r.get("startTime","") or "00:00:00")
+    # Rough ordering by started timestamp as fallback.
+    if key and started >= str(last_ts):
+        last_ts = started
+        last_ticket = key
+target = int(os.environ.get("TARGET","28800") or 28800)
+delta = target - total
+def fmt(s):
+    h, m = divmod(max(0, s)//60, 60)
+    if h == 0: return f"{m}m"
+    return f"{h}h{m}m" if m else f"{h}h"
+print(f"{total}\t{target}\t{delta}\t{fmt(total)}\t{fmt(target)}\t{fmt(delta)}\t{last_ticket}")
+PY
+)
+  IFS=$'\t' read -r _tt_total _tt_target _tt_delta _tt_total_h _tt_target_h _tt_delta_h _tt_last <<<"$_tempo_parsed"
+  if [[ -n "${_tt_total:-}" ]]; then
+    if (( _tt_delta > 0 )); then
+      TEMPO_SECTION="
+Tempo today: ${_tt_total_h} / ${_tt_target_h} (short by ${_tt_delta_h})"
+      TEMPO_BACKFILL_DELTA="${_tt_delta}"
+      TEMPO_BACKFILL_TICKET="${_tt_last}"
+    else
+      TEMPO_SECTION="
+Tempo today: ${_tt_total_h} / ${_tt_target_h} (on target)"
+    fi
+  fi
+fi
+
 DIGEST="Daily Summary ($TODAY_DISPLAY)
 
 Processed: $PROCESSED tickets
 MRs opened: $MRS_OPENED
 Skipped: $SKIPPED
 Failed: $FAILED
-$MR_SECTION
+$MR_SECTION${TEMPO_SECTION}
 
 Queue (New/To Do): $QUEUE_COUNT tickets
 $QUEUE_LIST"
 
 tg_send "$DIGEST"
+
+# If under-logged, send a follow-up inline card so the backfill is one tap
+# away. The callback (`tm_log:<ticket>:<date>:<secs>`) is already wired to
+# handler_tm_log via the existing tempo handler.
+if [[ -n "$TEMPO_BACKFILL_TICKET" ]] && (( TEMPO_BACKFILL_DELTA > 0 )); then
+  _delta_h=$(python3 -c "s=int($TEMPO_BACKFILL_DELTA); h,m=divmod(s//60,60); print(f'{h}h{m}m' if h and m else (f'{h}h' if h else f'{m}m'))")
+  _kb="[[{\"text\":\"Log ${_delta_h} → ${TEMPO_BACKFILL_TICKET}\",\"callback_data\":\"tm_log:${TEMPO_BACKFILL_TICKET}:${TODAY}:${TEMPO_BACKFILL_DELTA}\"},{\"text\":\"Pick ticket\",\"callback_data\":\"tm_pick:${TODAY}:${TEMPO_BACKFILL_DELTA}\"}]]"
+  tg_inline "Backfill ${_delta_h}? Last ticket was *${TEMPO_BACKFILL_TICKET}*." "$_kb" >/dev/null 2>&1 || true
+fi
 
 echo "Digest sent at $(date)"

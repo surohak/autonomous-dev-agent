@@ -1,10 +1,48 @@
 #!/bin/bash
 # scripts/handlers/queue.sh — queue / list-style Telegram commands:
-#   cmd_tickets  — Active runs + New/To Do queue
+#   cmd_tickets  — Active runs + New/To Do queue (current project)
 #   cmd_mrs      — your open MRs across SSR + Blog
+#   cmd_queue_all — cross-project priority queue with fair-share ordering
 
 [[ -n "${_DEV_AGENT_HANDLER_QUEUE_LOADED:-}" ]] && return 0
 _DEV_AGENT_HANDLER_QUEUE_LOADED=1
+
+# Source queue lib lazily so the regular cmd_tickets flow isn't penalised.
+_queue_lib_loaded=0
+_queue_lib_load() {
+  if [[ $_queue_lib_loaded -eq 0 ]]; then
+    # shellcheck disable=SC1091
+    source "$SKILL_DIR/scripts/lib/queue.sh"
+    _queue_lib_loaded=1
+  fi
+}
+
+cmd_queue_all() {
+  _queue_lib_load
+  local max="${1:-10}"
+  local rows
+  rows=$(queue_fair_pick "$max")
+  if [[ -z "$rows" ]]; then
+    tg_send "Cross-project queue is empty."
+    return 0
+  fi
+
+  local total_line
+  total_line=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
+  tg_send "*Priority queue* — top ${total_line} across all projects (fair-share):"
+
+  # Render one card per ticket with project+score badge.
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r SCORE PROJ TKEY TPRIO TSM; do
+    [[ -z "$TKEY" ]] && continue
+    # Trim the score to a single decimal for display.
+    local score_disp
+    score_disp=$(printf '%.1f' "$SCORE" 2>/dev/null || echo "$SCORE")
+    local kb
+    kb="[[{\"text\":\"Run\",\"callback_data\":\"run:$TKEY\"},{\"text\":\"Open\",\"callback_data\":\"tk_status:$TKEY\"}]]"
+    tg_inline "[${PROJ}] *${TKEY}* (${TPRIO}) — score ${score_disp}
+${TSM}" "$kb"
+  done
+}
 
 cmd_tickets() {
   active_run_prune >/dev/null 2>&1 || true

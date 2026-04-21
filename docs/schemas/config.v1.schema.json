@@ -1,0 +1,168 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/<owner>/autonomous-dev-agent/schema/v1/config.schema.json",
+  "title": "autonomous-dev-agent configuration (v1 — frozen)",
+  "description": "v1 is a contract. Fields below are stable; removals require a major version bump. New fields MAY be added in minor releases as long as they are optional.",
+  "type": "object",
+  "required": ["schemaVersion", "owner", "projects"],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": {
+      "description": "Major version of this schema. Agents refuse to start on unknown majors.",
+      "type": "integer",
+      "const": 1
+    },
+
+    "owner": {
+      "type": "object",
+      "required": ["name", "email"],
+      "properties": {
+        "name":              { "type": "string", "minLength": 1 },
+        "email":             { "type": "string", "format": "email" },
+        "slackUserId":       { "type": "string" },
+        "voiceLang":         { "type": "string", "description": "BCP-47, e.g. 'en' — used by Whisper transcription" },
+        "dailyWorkSeconds":  { "type": "integer", "minimum": 0, "default": 28800 }
+      }
+    },
+
+    "company": { "type": "string" },
+
+    "time": {
+      "type": "object",
+      "properties": {
+        "tz":       { "type": "string", "description": "IANA TZ (e.g. 'Europe/Berlin')" },
+        "digestAt": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }
+      }
+    },
+
+    "agent": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "Cursor CLI model slug. Per-project override allowed in projects[].agent.model.",
+          "examples": ["claude-opus-4-7-high", "claude-sonnet-4-5"]
+        },
+        "parallelism": { "type": "integer", "minimum": 1, "maximum": 8, "default": 3 }
+      }
+    },
+
+    "chat": {
+      "type": "object",
+      "properties": {
+        "kind":     { "type": "string", "enum": ["telegram", "slack"] },
+        "tokenEnv": { "type": "string", "description": "env var name in secrets.env holding the bot token" },
+        "chatId":   { "type": "string" },
+        "chatIdEnv":{ "type": "string" },
+        "channel":  { "type": "string", "description": "Slack channel id for 'slack' kind" }
+      }
+    },
+
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":        { "type": "string" },
+          "slackUserId": { "type": "string" },
+          "domains":     { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Project identifier — lowercase slug, unique per install.",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "name":         { "type": "string" },
+          "queueWeight":  { "type": "number", "minimum": 0, "default": 1.0, "description": "Fair-share bias; higher = more priority" },
+
+          "tracker": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind":        { "type": "string", "enum": ["jira-cloud", "github-issues", "linear"] },
+              "site":        { "type": "string", "format": "uri" },
+              "projectKey":  { "type": "string" },
+              "repo":        { "type": "string", "description": "github-issues: <owner>/<repo>" },
+              "teamKey":     { "type": "string", "description": "linear: team key" }
+            }
+          },
+
+          "host": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind":   { "type": "string", "enum": ["gitlab", "github"] },
+              "site":   { "type": "string", "format": "uri" },
+              "group":  { "type": "string" }
+            }
+          },
+
+          "chat": {
+            "type": "object",
+            "properties": {
+              "kind":      { "type": "string", "enum": ["telegram", "slack"] },
+              "tokenEnv":  { "type": "string" },
+              "chatIdEnv": { "type": "string" },
+              "channel":   { "type": "string" }
+            }
+          },
+
+          "agent": {
+            "type": "object",
+            "properties": {
+              "model": { "type": "string" }
+            }
+          },
+
+          "workflow": {
+            "type": "object",
+            "description": "Project-specific tracker-workflow intent → transition mapping.",
+            "properties": {
+              "aliases": {
+                "type": "object",
+                "description": "Semantic intent → tracker transition name. Known intents: start, push_review, after_approve, done, block, unblock.",
+                "additionalProperties": { "type": "string" }
+              }
+            }
+          },
+
+          "repositories": {
+            "type": "object",
+            "description": "alias → { localPath, <host>Project }",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "localPath":      { "type": "string" },
+                "gitlabProject":  { "type": "string" },
+                "githubRepo":     { "type": "string" },
+                "defaultBranch":  { "type": "string", "default": "main" }
+              }
+            }
+          },
+
+          "rebase": {
+            "type": "object",
+            "properties": {
+              "autoResolve": {
+                "type": "array",
+                "description": "Glob patterns to auto-resolve by taking target-branch version (lock files, translations, generated docs).",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

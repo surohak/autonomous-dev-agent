@@ -131,7 +131,7 @@ git push origin <source_branch>
 
 ### Step 6 — Log fix to lessons
 
-Append a one-liner to `cache/lessons.md`:
+Append a one-liner to `{{PROJECT_CACHE_DIR}}/lessons.md`:
 ```
 ## CI fix: <category> (<date>)
 <ticket_key> !<mr_iid> — <1-sentence cause> → <1-sentence fix>

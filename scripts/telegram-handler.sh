@@ -58,6 +58,10 @@ source "$SKILL_DIR/scripts/handlers/watch.sh"
 source "$SKILL_DIR/scripts/handlers/tempo.sh"
 # shellcheck disable=SC1091
 source "$SKILL_DIR/scripts/handlers/project.sh"
+# shellcheck disable=SC1091
+source "$SKILL_DIR/scripts/handlers/workflow.sh"
+# shellcheck disable=SC1091
+source "$SKILL_DIR/scripts/handlers/rebase.sh"
 
 # OFFSET_FILE is specific to this daemon. Scoped per-bot-token via cfg.sh so
 # per-project bot overrides don't race (each bot polls its own offset).
@@ -169,7 +173,7 @@ if [ -z "${UPDATES:-}" ]; then
 fi
 
 MESSAGES=$(echo "$UPDATES" | python3 -c "
-import sys, json, re
+import sys, json, re, os, base64
 data = json.load(sys.stdin)
 results = data.get('result', [])
 chat_id = ${TELEGRAM_CHAT_ID}
@@ -213,6 +217,51 @@ for r in results:
     msg = r.get('message', {})
     if msg.get('chat', {}).get('id') != chat_id:
         continue
+
+    # v0.5.0 — voice notes. Telegram sends .voice (OGG/opus) for short
+    # recordings; .audio is an uploaded music file. We emit a sentinel
+    # '__VOICE__:<file_id>:<duration>:<mime>' that the bash dispatcher
+    # downloads + transcribes. The transcript is then re-dispatched as a
+    # normal text command, so you can say "ask why is CI failing" hands-free.
+    voice_obj = msg.get('voice') or msg.get('audio')
+    if voice_obj:
+        file_id = voice_obj.get('file_id')
+        mime    = voice_obj.get('mime_type') or 'audio/ogg'
+        dur     = voice_obj.get('duration') or 0
+        if file_id:
+            msgs.append({'text': f'__VOICE__:{file_id}:{dur}:{mime}'})
+            continue
+
+    # v0.5.0 — photo attachments. Telegram delivers an array of sizes in
+    # msg['photo']; we take the largest. If the user replied to a force-reply
+    # prompt (review feedback, discuss, edit), we emit a sentinel that the
+    # bash dispatcher OCRs and injects as the reply text. Otherwise, a bare
+    # photo becomes an "ask" with the OCRed text.
+    photo_arr = msg.get('photo') or []
+    if photo_arr:
+        largest = max(photo_arr, key=lambda p: (p.get('width',0) * p.get('height',0)))
+        file_id = largest.get('file_id')
+        caption = msg.get('caption', '') or ''
+        # Track the reply-to context so the OCR branch can pick the right
+        # follow-up command (review, discuss, edit, or bare ask).
+        reply_ctx = ''
+        rt = msg.get('reply_to_message', {})
+        rt_text = (rt.get('text','') or '') if rt else ''
+        if re.match(r'^Reply with review feedback for ', rt_text):
+            m = re.match(r'^Reply with review feedback for (' + os.environ['TICKET_KEY_PATTERN'] + '):', rt_text)
+            if m: reply_ctx = f'review {m.group(1)}'
+        elif re.match(r'^Edit comment (\d+)#(\d+):', rt_text):
+            m = re.match(r'^Edit comment (\d+)#(\d+):', rt_text)
+            if m: reply_ctx = f'rv_editapply {m.group(1)} {m.group(2)}'
+        elif re.match(r'^Discuss comment (\d+)#(\d+):', rt_text):
+            m = re.match(r'^Discuss comment (\d+)#(\d+):', rt_text)
+            if m: reply_ctx = f'rv_discussapply {m.group(1)} {m.group(2)}'
+        if file_id:
+            # Sentinel shape: __PHOTO__:<file_id>:<b64 caption>:<b64 reply_ctx>
+            cap_b64 = base64.urlsafe_b64encode(caption.encode()).decode()
+            ctx_b64 = base64.urlsafe_b64encode(reply_ctx.encode()).decode()
+            msgs.append({'text': f'__PHOTO__:{file_id}:{cap_b64}:{ctx_b64}'})
+            continue
 
     text = msg.get('text')
     if not text:
@@ -307,6 +356,143 @@ for m in data['messages']:
     answer_callback "$CB_ID"
   fi
 
+  # v0.5.0 — voice-note preprocessing. If the update-parser tagged this
+  # message as a voice note (sentinel '__VOICE__:<file_id>:<dur>:<mime>'),
+  # download + transcribe first, then substitute the transcript back into
+  # CMD so the normal command router handles it unchanged.
+  if [[ "$CMD" == __VOICE__:* ]]; then
+    _voice_payload="${CMD#__VOICE__:}"
+    _voice_file_id="${_voice_payload%%:*}"
+    _voice_rest="${_voice_payload#*:}"
+    _voice_dur="${_voice_rest%%:*}"
+    _voice_mime="${_voice_rest#*:}"
+
+    # Tempdir lives in the per-bot cache so it's auto-rotated by cleanup.
+    _voice_dir="${CACHE_DIR:-$HOME/.cursor/skills/autonomous-dev-agent/cache}/voice"
+    mkdir -p "$_voice_dir"
+
+    # Step 1 — getFile to resolve a download URL.
+    _voice_file_path=$(curl -s --max-time 10 \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${_voice_file_id}" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("result") or {}).get("file_path",""))' 2>/dev/null)
+
+    if [[ -z "$_voice_file_path" ]]; then
+      tg_send "🎙 Voice note: couldn't fetch the file from Telegram. Try sending as text." >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # Pick an extension from the mime type so transcribe.sh / ffmpeg are happy.
+    case "$_voice_mime" in
+      *ogg*)  _voice_ext=ogg ;;
+      *m4a*|*mp4*|*aac*) _voice_ext=m4a ;;
+      *mp3*|*mpeg*) _voice_ext=mp3 ;;
+      *wav*)  _voice_ext=wav ;;
+      *)      _voice_ext=ogg ;;
+    esac
+    _voice_local="${_voice_dir}/${_voice_file_id}.${_voice_ext}"
+
+    curl -sSL --max-time 30 \
+      "https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${_voice_file_path}" \
+      -o "$_voice_local" 2>/dev/null || {
+        tg_send "🎙 Voice note: download failed. Try again or type the command." >/dev/null 2>&1 || true
+        continue
+      }
+
+    # Acknowledge so the user knows we heard it; long clips take a few seconds.
+    tg_send "🎙 Transcribing ${_voice_dur}s voice note…" >/dev/null 2>&1 || true
+
+    # shellcheck disable=SC1091
+    source "$SKILL_DIR/scripts/lib/transcribe.sh"
+    _voice_transcript=$(transcribe_audio "$_voice_local" "$(cfg_get '.owner.voiceLang' 'en')" 2>&1) || {
+      tg_send "🎙 Transcribe failed: ${_voice_transcript:-unknown error}. See logs." >/dev/null 2>&1 || true
+      rm -f "$_voice_local"
+      continue
+    }
+    rm -f "$_voice_local" 2>/dev/null || true
+
+    if [[ -z "$_voice_transcript" ]]; then
+      tg_send "🎙 Transcribe returned empty text. Try closer to the mic." >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # Echo the transcript so the user can confirm what the bot heard. The
+    # leading "/" is stripped later by CMD_CLEAN if present.
+    tg_send "🎙 Heard: _${_voice_transcript}_" >/dev/null 2>&1 || true
+
+    # Re-enter the normal command flow with the transcribed text.
+    CMD="$_voice_transcript"
+  fi
+
+  # v0.5.0 — screenshot OCR. Sentinel:
+  #   __PHOTO__:<file_id>:<b64 caption>:<b64 reply_ctx>
+  # The reply_ctx captures force-reply parentage (review / rv_editapply /
+  # rv_discussapply) so the photo can substitute/augment the expected text
+  # reply. A bare photo with no context becomes an "ask" over the OCR.
+  if [[ "$CMD" == __PHOTO__:* ]]; then
+    _photo_payload="${CMD#__PHOTO__:}"
+    _photo_file_id="${_photo_payload%%:*}"
+    _photo_rest="${_photo_payload#*:}"
+    _photo_cap_b64="${_photo_rest%%:*}"
+    _photo_ctx_b64="${_photo_rest#*:}"
+    _photo_cap=$(printf '%s' "$_photo_cap_b64" | python3 -c 'import sys,base64; print(base64.urlsafe_b64decode(sys.stdin.read()).decode(errors="replace"))' 2>/dev/null)
+    _photo_ctx=$(printf '%s' "$_photo_ctx_b64" | python3 -c 'import sys,base64; print(base64.urlsafe_b64decode(sys.stdin.read()).decode(errors="replace"))' 2>/dev/null)
+
+    _photo_dir="${CACHE_DIR:-$HOME/.cursor/skills/autonomous-dev-agent/cache}/photos"
+    mkdir -p "$_photo_dir"
+
+    _photo_file_path=$(curl -s --max-time 10 \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${_photo_file_id}" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("result") or {}).get("file_path",""))' 2>/dev/null)
+
+    if [[ -z "$_photo_file_path" ]]; then
+      tg_send "📷 Photo: Telegram didn't return a file_path. Re-send as document, or paste the text." >/dev/null 2>&1 || true
+      continue
+    fi
+
+    _photo_local="${_photo_dir}/${_photo_file_id}.jpg"
+    curl -sSL --max-time 30 \
+      "https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${_photo_file_path}" \
+      -o "$_photo_local" 2>/dev/null || {
+        tg_send "📷 Photo download failed." >/dev/null 2>&1 || true
+        continue
+      }
+
+    tg_send "📷 Extracting text from screenshot…" >/dev/null 2>&1 || true
+    # shellcheck disable=SC1091
+    source "$SKILL_DIR/scripts/lib/ocr.sh"
+    _photo_text=$(ocr_image "$_photo_local" 2>&1) || {
+      tg_send "📷 OCR failed: ${_photo_text:-unknown error}. See logs; caption-only path is still available." >/dev/null 2>&1 || true
+      rm -f "$_photo_local"
+      continue
+    }
+    rm -f "$_photo_local" 2>/dev/null || true
+
+    # Combine caption + extracted text, trimming. Caption (if any) goes first
+    # because the user intent usually comes from their typed message.
+    _photo_body=""
+    [[ -n "$_photo_cap" ]] && _photo_body="$_photo_cap"$'\n'
+    _photo_body="$_photo_body$_photo_text"
+    _photo_body=$(printf '%s' "$_photo_body" | awk 'NF {print}' | head -c 4000)
+
+    if [[ -z "$_photo_body" ]]; then
+      tg_send "📷 No text extracted from the screenshot." >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # Echo a snippet so the user can verify what was captured.
+    _photo_preview=$(printf '%s' "$_photo_body" | head -c 400)
+    tg_send "📷 Extracted (first 400 chars): \`${_photo_preview}\`" >/dev/null 2>&1 || true
+
+    # Dispatch based on context. Replace newlines with spaces for single-line
+    # command dispatch — the downstream handlers don't expect multi-line CMDs.
+    _photo_oneline=$(printf '%s' "$_photo_body" | tr '\n\r\t' ' ' | tr -s ' ')
+    if [[ -n "$_photo_ctx" ]]; then
+      CMD="${_photo_ctx} ${_photo_oneline}"
+    else
+      CMD="ask ${_photo_oneline}"
+    fi
+  fi
+
   # Strip leading slash and @botname suffix (for slash commands and group mentions)
   CMD_CLEAN=$(echo "$CMD" | sed -E 's/^\///; s/@[a-zA-Z0-9_]+[ ]*/ /')
   CMD_LOWER=$(echo "$CMD_CLEAN" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -327,6 +513,24 @@ for m in data['messages']:
         tg_send "── *${_pid_iter}* (${JIRA_PROJECT:-?}) ──"
         cmd_status
       done
+      # v0.5.0 — one-line queue summary read from the watcher snapshot
+      # (global/queue-snapshot.json). Cheap, no tracker round-trips.
+      _queue_snap="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/queue-snapshot.json"
+      if [[ -f "$_queue_snap" ]]; then
+        _queue_line=$(python3 - "$_queue_snap" <<'PY' 2>/dev/null
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+projs = [k for k in d.keys() if not k.startswith("_")]
+bits = []
+for p in sorted(projs):
+    n = len((d.get(p) or {}).get("todo") or [])
+    bits.append(f"{p}={n}")
+print("Queue: " + " · ".join(bits) if bits else "")
+PY
+)
+        [[ -n "$_queue_line" ]] && tg_send "$_queue_line"
+      fi
       # Restore the active project so subsequent commands use it.
       project_set "$(project_current)" >/dev/null 2>&1 || true
       ;;
@@ -351,8 +555,39 @@ for m in data['messages']:
       handler_project info "${CMD_LOWER#project show }"
       ;;
 
+    workflow)
+      handler_workflow
+      ;;
+
+    workflow\ refresh)
+      handler_workflow refresh
+      ;;
+
+    workflow\ refresh\ *)
+      handler_workflow refresh "${CMD_LOWER#workflow refresh }"
+      ;;
+
+    workflow\ *)
+      handler_workflow "${CMD_LOWER#workflow }"
+      ;;
+
+    rebase|rebase\ *)
+      handler_rebase ${CMD_LOWER#rebase}
+      ;;
+
     tickets)
       cmd_tickets
+      ;;
+
+    queue|queue\ all)
+      # v0.5.0 — cross-project priority queue with fair-share ordering.
+      cmd_queue_all 10
+      ;;
+
+    queue\ *)
+      # Allow a numeric arg: /queue 20
+      _qmax="${CMD_LOWER#queue }"
+      [[ "$_qmax" =~ ^[0-9]+$ ]] && cmd_queue_all "$_qmax" || cmd_queue_all 10
       ;;
 
     mrs)
@@ -1401,6 +1636,7 @@ if not tid:
 
 if not tid:
     print(f"WARN: no 'In Progress' transition available. Available: {available}")
+    print("HINT: run `/workflow refresh` in Telegram or add a `workflow.aliases.start` pattern to config.json")
 else:
     body = json.dumps({"transition": {"id": tid}}).encode()
     req = urllib.request.Request(
@@ -1749,6 +1985,7 @@ for t in tdata.get("transitions", []):
 if not target:
     available = [t["name"] for t in tdata.get("transitions",[])]
     print(f"MERGED, but 'Integration Testing' transition not available. Options: {available}")
+    print("HINT: run `/workflow refresh` or add `workflow.aliases.after_merge` in config.json")
     raise SystemExit(1)
 
 body = json.dumps({"transition": {"id": target["id"]}}).encode()

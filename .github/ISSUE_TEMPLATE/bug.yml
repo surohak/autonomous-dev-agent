@@ -1,0 +1,79 @@
+name: Bug report
+description: Something broke in an install that was working before.
+title: "[bug] <short description>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! Please run `bin/doctor` first — most issues are
+        diagnosed there. Paste its output into the "doctor output" field
+        below (it redacts tokens).
+  - type: input
+    id: version
+    attributes:
+      label: Release / commit
+      description: "Run `git describe --always --tags` in the checkout."
+      placeholder: "v0.3.1 / abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: macOS version
+      options:
+        - "macOS 13 Ventura"
+        - "macOS 14 Sonoma"
+        - "macOS 15 Sequoia"
+        - "Other"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "watcher / polling"
+        - "telegram handler"
+        - "jira workflow discovery"
+        - "install / doctor"
+        - "swiftbar / menu bar"
+        - "tempo / worklogs"
+        - "other"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure config.json with …
+        2. Run `bin/install.sh`
+        3. Open Telegram and send `/status`
+        4. Observe: …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: "Paste `bin/doctor.sh` output (tokens are not printed)."
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log excerpts
+      description: "Last ~50 lines of the relevant `logs/*.log`. Strip any PII first."
+      render: shell

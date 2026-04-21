@@ -110,6 +110,71 @@ svc_row "telegram"  "$TELEGRAM_LABEL"
 svc_row "digest"    "$DIGEST_LABEL"
 echo "---"
 
+# --- v0.5.0 — Queue snapshot (read-only, zero-network) ---------------------
+# watcher.sh drops cache/global/queue-snapshot.json each tick. Shape:
+#   { "<project-id>": { "todo": [ {key,summary,priority,...}, ... ], "updated_at": ts }, ... }
+# We render a compact per-project count plus the top 5 priority tickets.
+QUEUE_SNAP=""
+for candidate in \
+    "$SKILL_DIR/cache/global/queue-snapshot.json" \
+    "$SKILL_DIR/cache/queue-snapshot.json"; do
+  if [[ -f "$candidate" ]]; then QUEUE_SNAP="$candidate"; break; fi
+done
+
+if [[ -n "$QUEUE_SNAP" ]]; then
+  QUEUE_OUT=$(python3 - "$QUEUE_SNAP" <<'PY' 2>/dev/null
+import json, sys, time
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict) or not d:
+    sys.exit(0)
+
+# Priority -> weight (same table as lib/queue.sh).
+WEIGHT = {"highest":5,"p0":5,"critical":5,"blocker":5,"urgent":5,
+         "high":4,"p1":4,"major":4,
+         "medium":3,"p2":3,"normal":3,"default":3,
+         "low":2,"p3":2,"minor":2,
+         "lowest":1,"p4":1,"trivial":1}
+def w(p): return WEIGHT.get((p or "medium").lower(), 3)
+
+projects = sorted([k for k in d.keys() if not k.startswith("_")])
+if not projects:
+    sys.exit(0)
+
+totals = {}
+flat = []
+for p in projects:
+    items = (d.get(p) or {}).get("todo") or []
+    totals[p] = len(items)
+    for it in items:
+        flat.append((w(it.get("priority")), p, it))
+
+print("Queue snapshot")
+for p in projects:
+    print(f"  {p}: {totals[p]} open | font=Menlo")
+print("---")
+
+# Top 5 across projects by priority weight.
+flat.sort(key=lambda t: -t[0])
+shown = 0
+for weight, proj, it in flat[:5]:
+    key = it.get("key","?")
+    summ = (it.get("summary","") or "")[:60].replace("|"," ").replace("\n"," ")
+    prio = it.get("priority","?")
+    print(f"  {key} [{prio}] {summ} | font=Menlo size=11 length=80")
+    shown += 1
+if shown == 0:
+    print("  (no open tickets) | color=gray")
+
+# Quick-nav entries.
+print("---")
+PY
+)
+  [[ -n "$QUEUE_OUT" ]] && printf '%s\n' "$QUEUE_OUT"
+fi
+
 # --- Actions ---------------------------------------------------------------
 if [[ -x "$CTL" ]]; then
   if (( loaded == 0 )); then

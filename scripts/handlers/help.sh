@@ -20,7 +20,12 @@ Top-level
 - /project list — show all projects (active marked ✓)
 - /project use <id> — switch active project
 - /project info [<id>] — tracker/bot/model settings for a project
+- /workflow [<id>] — show Jira workflow intents (active or named project)
+- /workflow refresh [<id>] — re-discover Jira workflow after admin changes
 - /tickets — Active runs section + New/To Do queue
+- /queue [<n>] — cross-project priority queue (fair-share, top N; default 10)
+- /rebase <mr-iid> [<alias>] — auto-rebase onto main (safe conflicts only)
+- /rebase check <mr-iid> — inspect drift without pushing
 - /reviews — MRs assigned to you for code review
 - /mrs — your own open MRs
 - /run — trigger full agent run

@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Dependabot scans the runtime for package manifests. This repo is bash + a
+  # pinch of Python — neither has a lockfile by design. We scope Dependabot
+  # to GitHub Actions only so the noise stays proportional to the attack
+  # surface.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - "dependencies"
+      - "github_actions"
+    commit-message:
+      prefix: "chore(deps)"

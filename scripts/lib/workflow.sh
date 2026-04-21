@@ -289,3 +289,71 @@ else:
         print(line)
 PY
 }
+
+# workflow_unresolved — emit the list of semantic intents that discovery could
+# NOT map to a transition for this project. Used by doctor/telegram to give
+# actionable guidance ("add an alias for X in config.json").
+# Prints one intent per line, or nothing if everything resolved.
+workflow_unresolved() {
+  local wf; wf=$(_workflow_file)
+  [[ ! -f "$wf" ]] && return 1
+  local aliases; aliases=$(_workflow_aliases_json)
+  WF="$wf" ALIASES="$aliases" python3 - <<'PY'
+import json, os
+d = json.load(open(os.environ["WF"]))
+aliases = json.loads(os.environ["ALIASES"])
+resolved = set((d.get("intents") or {}).keys())
+for intent in sorted(aliases.keys()):
+    if intent not in resolved:
+        print(intent)
+PY
+}
+
+# workflow_explain_unresolved <intent>
+# Emit a Markdown block the user can read in Telegram. Lists:
+#   - the intent name and what it means
+#   - the available statuses and transitions on this project
+#   - the exact snippet to paste into config.json to fix it
+workflow_explain_unresolved() {
+  local intent="$1"
+  local wf; wf=$(_workflow_file)
+  [[ ! -f "$wf" ]] && { echo "_(workflow cache empty — run \`/workflow refresh\` first)_"; return 1; }
+
+  INTENT="$intent" WF="$wf" python3 - <<'PY'
+import json, os
+intent = os.environ["INTENT"]
+d = json.load(open(os.environ["WF"]))
+
+meanings = {
+    "start":         "move a New/To-Do ticket into active work",
+    "push_review":   "send a completed ticket to Code Review",
+    "after_approve": "advance from Code Review onwards (typically Ready for QA)",
+    "done":          "mark the ticket closed / done",
+    "block":         "mark the ticket blocked / needs-clarification",
+    "unblock":       "move the ticket out of blocked back to active",
+}
+
+print(f"*Unresolved intent: `{intent}`*")
+print(f"_({meanings.get(intent, 'custom intent')})_")
+print("")
+print("*Available transitions on this project:*")
+for t in (d.get("transitions") or []):
+    print(f"• `{t.get('name','')}` → `{t.get('to_name','')}`")
+
+print("")
+print("*How to fix:* add an alias to `config.json`:")
+print("```json")
+print(json.dumps({
+    "projects": [{
+        "id": d.get("project", "YOUR-PROJECT"),
+        "workflow": {
+            "aliases": {
+                intent: ["^YOUR TRANSITION NAME HERE$"]
+            }
+        }
+    }]
+}, indent=2))
+print("```")
+print("Then: `/workflow refresh`")
+PY
+}

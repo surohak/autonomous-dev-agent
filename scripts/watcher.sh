@@ -18,6 +18,7 @@ source "$SKILL_DIR/scripts/lib/cfg.sh"
 source "$SKILL_DIR/scripts/lib/telegram.sh"
 source "$SKILL_DIR/scripts/lib/jira.sh"
 source "$SKILL_DIR/scripts/lib/workflow.sh"
+source "$SKILL_DIR/scripts/lib/log-rotate.sh"
 source "$SKILL_DIR/scripts/lib/timegate.sh"
 # shellcheck disable=SC1091
 source "$SKILL_DIR/scripts/active-run.sh"
@@ -127,6 +128,33 @@ for AGENT_PROJECT in $(cfg_project_list); do
   if [ ! -s "$STATE_FILE" ]; then
     echo '{"pipelines":{},"mr_notes":{},"jira_tickets":{}}' > "$STATE_FILE"
   fi
+
+  # v0.3.1 — project-scoped error isolation. The body below is ~400 lines of
+  # CI/MR/Jira polling. Any uncaught error (Jira 500, GitLab rate limit,
+  # jq parse fail, python exit 1, …) would otherwise kill the watcher for
+  # every subsequent project in the iteration. We open a subshell + trap
+  # so a crash in project A reports via Telegram + logs but still falls
+  # through to project B.
+  _project_error_reported() {
+    local rc=$1 proj="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] !! project '$proj' body exited $rc — continuing with remaining projects" >> "$LOG_FILE"
+    # Best-effort Telegram warning — at most once per hour per project, so
+    # an ongoing outage doesn't spam the chat. State file lives under the
+    # global cache so it survives per-project env rebinds.
+    local warn_stamp="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-crash-${proj}.ts"
+    local now; now=$(date +%s)
+    local last=0
+    [[ -f "$warn_stamp" ]] && last=$(cat "$warn_stamp" 2>/dev/null || echo 0)
+    if (( now - last >= 3600 )) && [[ "$NOTIFY_OK" = "1" ]]; then
+      tg_send "⚠️ Watcher crashed on project \`$proj\` (exit $rc). See \`logs/watcher.log\` — next ticks will retry." >/dev/null 2>&1 || true
+      echo "$now" > "$warn_stamp"
+    fi
+  }
+
+  # Subshell trick: open with `(`, close with `)` at the matching marker.
+  # We execute the body in a subshell so `return`, `exit`, and fatal
+  # signals only abort THIS iteration, not the whole watcher.
+  (
 
 # =============================================================================
 # 1. CI pipeline watcher — user's open MRs in both repos
@@ -411,6 +439,43 @@ print(json.dumps({"new": new_assignments, "changes": status_changes}))
 PY
 )
 
+# v0.5.0 — queue snapshot for SwiftBar + /status all + /queue quick reads.
+# Cheap: reuses the JIRA JSON we already fetched; no extra network calls.
+# Location is global so SwiftBar can load "all projects queue" in one read
+# without traversing per-project cache directories.
+QUEUE_SNAP_FILE="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/queue-snapshot.json"
+mkdir -p "$(dirname "$QUEUE_SNAP_FILE")"
+JIRA="$JIRA" PROJECT="$AGENT_PROJECT" SNAP="$QUEUE_SNAP_FILE" python3 <<'PY' 2>>"$LOG_FILE" || true
+import os, json, time
+jira = json.loads(os.environ.get("JIRA") or '{"issues":[]}')
+pid = os.environ["PROJECT"]
+snap_path = os.environ["SNAP"]
+
+# Load-or-init the cross-project map: { "<pid>": {...}, "_updated": ts }
+try:
+    data = json.load(open(snap_path))
+    if not isinstance(data, dict): data = {}
+except Exception:
+    data = {}
+
+todo = []
+for issue in jira.get("issues", []):
+    status = (issue["fields"].get("status") or {}).get("name","").lower()
+    if status not in ("new","to do","open","backlog","todo"):
+        continue
+    todo.append({
+        "key":     issue["key"],
+        "summary": (issue["fields"].get("summary","") or "")[:200],
+        "priority":(issue["fields"].get("priority") or {}).get("name","?"),
+        "status":  (issue["fields"].get("status") or {}).get("name",""),
+        "type":    (issue["fields"].get("issuetype") or {}).get("name",""),
+    })
+
+data[pid] = {"todo": todo, "updated_at": int(time.time())}
+data["_updated"] = int(time.time())
+json.dump(data, open(snap_path, "w"), indent=2)
+PY
+
 echo "$RESULT" | python3 -c "
 import sys, json, os
 d = json.load(sys.stdin)
@@ -529,6 +594,16 @@ for c in d['changes']:
   fi
 done   # STATUS_CHANGE / NEEDS_CLARIFICATION loop
 
+  )  # end per-project subshell
+  _project_rc=$?
+  if (( _project_rc != 0 )); then
+    _project_error_reported "$_project_rc" "$AGENT_PROJECT"
+  fi
 done   # outer per-project loop
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Watcher done" >> "$LOG_FILE"
+
+# v0.3.1 — rotate any log that has grown past LOG_ROTATE_THRESHOLD_BYTES
+# (default 50 MB). Cheap: a stat per log, no-op if under threshold. Runs
+# after every tick so archives stay bounded even on busy days.
+rotate_all "$LOG_DIR" 2>/dev/null || true

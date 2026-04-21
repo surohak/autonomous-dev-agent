@@ -4,13 +4,29 @@
 # Checks (each prints PASS/FAIL/WARN + explanation):
 #   - required binaries on PATH
 #   - config.json/secrets.env exist, readable, not still placeholders
+#   - config.json schema lint (shape, required fields, enum values)
 #   - Jira auth: curl /rest/api/3/myself
 #   - Telegram auth: curl bot/getMe
 #   - GitLab auth: glab auth status / curl /user
 #   - Tempo auth (if token set): curl /4/worklogs?limit=1
-#   - launchd: each of the 4 services loaded
+#   - launchd: each service loaded
 #   - disk: cache/ and logs/ writable
 #   - clock: warn if system clock is more than 5s off UTC
+#
+# Flags:
+#   --fix      Apply safe, non-destructive fixes for remediable warnings:
+#                • mkdir -p missing cache/ logs/ logs/archive/
+#                • chmod 600 secrets.env
+#                • re-run workflow_discover if the cache is missing
+#                • re-link SwiftBar plugin when the link is broken/missing
+#              Never mutates config.json or secrets.env contents.
+#   --smoke    (v1.0.0) end-to-end ping for every integration: per-project
+#              runs tracker_probe + tracker_search + host_probe +
+#              host_current_user + chat_probe. Read-only by default.
+#   --chat     Only in combination with --smoke — also sends a visible chat
+#              heartbeat message to every configured chat. Off by default so
+#              the health check is safe to run in cron.
+#   --json     Emit the summary as JSON (CI-friendly).
 #
 # Exit code: 0 if all hard-fail checks pass, 1 otherwise.
 
@@ -19,6 +35,21 @@ set -euo pipefail
 SKILL_DIR="${SKILL_DIR:-$HOME/.cursor/skills/autonomous-dev-agent}"
 LABEL_PREFIX="com.${USER:-user}"
 cd "$SKILL_DIR" 2>/dev/null || { echo "doctor: SKILL_DIR $SKILL_DIR not found"; exit 1; }
+
+FIX=0
+SMOKE=0
+JSON_OUT=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix)   FIX=1 ;;
+    --smoke) SMOKE=1 ;;
+    --json)  JSON_OUT=1 ;;
+    -h|--help)
+      sed -n '1,30p' "$0" | sed 's/^# //; s/^#//'
+      exit 0
+      ;;
+  esac
+done
 
 # ANSI
 BOLD="$(tput bold 2>/dev/null || true)"
@@ -30,11 +61,27 @@ RST="$(tput sgr0 2>/dev/null || true)"
 
 HARD_FAILS=0
 WARNS=0
+FIXED=0
 
-pass() { echo "  ${GREEN}PASS${RST} $1"; }
-fail() { echo "  ${RED}FAIL${RST} $1"; HARD_FAILS=$((HARD_FAILS+1)); }
-warn() { echo "  ${YELLOW}WARN${RST} $1"; WARNS=$((WARNS+1)); }
-info() { echo "  ${DIM}$1${RST}"; }
+pass()  { echo "  ${GREEN}PASS${RST} $1"; }
+fail()  { echo "  ${RED}FAIL${RST} $1"; HARD_FAILS=$((HARD_FAILS+1)); }
+warn()  { echo "  ${YELLOW}WARN${RST} $1"; WARNS=$((WARNS+1)); }
+info()  { echo "  ${DIM}$1${RST}"; }
+fixed() { echo "  ${GREEN}FIXED${RST} $1"; FIXED=$((FIXED+1)); }
+
+# warnfix <message> <shell-command>
+# Emit a warning AND, when --fix is active, run the remediation and downgrade
+# to FIXED. Command runs in the current shell so it can touch HARD_FAILS etc.
+warnfix() {
+  local msg="$1"; shift
+  if [[ "$FIX" = "1" ]]; then
+    if eval "$@" >/dev/null 2>&1; then
+      fixed "$msg"
+      return 0
+    fi
+  fi
+  warn "$msg"
+}
 
 section() { echo; echo "${BOLD}$1${RST}"; }
 
@@ -64,7 +111,7 @@ if [[ -f secrets.env ]]; then
   pass "secrets.env present"
   perms=$(stat -f "%Lp" secrets.env 2>/dev/null || stat -c "%a" secrets.env 2>/dev/null || echo "?")
   if [[ "$perms" != "600" ]]; then
-    warn "secrets.env mode is $perms, recommended 600 — run: chmod 600 secrets.env"
+    warnfix "secrets.env mode is $perms, recommended 600" "chmod 600 secrets.env"
   fi
 else
   fail "secrets.env missing — run bin/init.sh"
@@ -82,6 +129,31 @@ source scripts/lib/jira.sh
 source scripts/lib/workflow.sh
 # shellcheck disable=SC1091
 source secrets.env
+
+# -- schema lint (config.json shape) ---------------------------------------
+# A minimal structural validator. Far from full JSON Schema but catches the
+# mistakes we've actually seen in issues (typos, missing required fields,
+# non-string ids, chat.tokenEnv not in secrets.env, …). The full schema lives
+# at docs/CONFIG_SCHEMA.json for reference.
+section "[schema]"
+if [[ -f config.json ]]; then
+  SCHEMA_OUT=$(CFG=config.json python3 "$SKILL_DIR/scripts/lib/_cfg_lint.py" 2>&1) || true
+  if [[ -z "$SCHEMA_OUT" ]]; then
+    pass "config.json conforms to v0.3 schema"
+  else
+    # One issue per line. Levels: ERROR (fail), WARN (warn), INFO (info).
+    while IFS= read -r line; do
+      case "$line" in
+        ERROR*) fail "${line#ERROR: }" ;;
+        WARN*)  warn "${line#WARN: }"  ;;
+        INFO*)  info "${line#INFO: }"  ;;
+        *)      info "$line"           ;;
+      esac
+    done <<< "$SCHEMA_OUT"
+  fi
+else
+  info "skipped — config.json missing"
+fi
 
 # -- projects ---------------------------------------------------------------
 section "[projects]"
@@ -153,12 +225,13 @@ elif [[ -z "$JIRA_PROJECT" ]]; then
   info "skipped — tracker.project not set"
 else
   # Discover once if we don't already have a cache. Cheap — 2 HTTP calls.
-  if [[ ! -f "${WORKFLOW_FILE:-}" ]]; then
-    info "no workflow cache yet; discovering from live Jira…"
-    out=$(workflow_discover 2>&1 || true)
+  # With --fix, force a refresh so users get a clean slate after aliases edits.
+  if [[ ! -f "${WORKFLOW_FILE:-}" || "$FIX" = "1" ]]; then
+    info "running workflow discovery…"
+    out=$(workflow_refresh 2>&1 || true)
     if [[ -f "$WORKFLOW_FILE" ]]; then
-      pass "workflow discovered → $WORKFLOW_FILE"
-      [[ "$out" == UNRESOLVED:* ]] && warn "unresolved intents: ${out#UNRESOLVED:} (add aliases in config.json projects[].workflow.aliases)"
+      [[ "$FIX" = "1" ]] && fixed "workflow re-discovered → $WORKFLOW_FILE" || pass "workflow discovered → $WORKFLOW_FILE"
+      [[ "$out" == UNRESOLVED:* ]] && warn "unresolved intents: ${out#UNRESOLVED:} (add aliases in config.json projects[].workflow.aliases, or use /workflow refresh)"
     else
       warn "workflow discovery failed — check Jira auth; falling back to name-match"
     fi
@@ -245,20 +318,37 @@ SWIFTBAR_SRC="$SKILL_DIR/scripts/menubar/dev-agent.30s.sh"
 if [[ ! -d "$SWIFTBAR_PLUGINS" ]]; then
   info "SwiftBar not installed — menu-bar icon disabled (optional; install from https://swiftbar.app)"
 elif [[ ! -L "$SWIFTBAR_LINK" && ! -f "$SWIFTBAR_LINK" ]]; then
-  warn "SwiftBar detected but plugin not linked — re-run bin/install.sh"
+  warnfix "SwiftBar detected but plugin not linked" "ln -s '$SWIFTBAR_SRC' '$SWIFTBAR_LINK'"
 elif [[ -L "$SWIFTBAR_LINK" && "$(readlink "$SWIFTBAR_LINK")" != "$SWIFTBAR_SRC" ]]; then
-  warn "SwiftBar plugin symlink points elsewhere: $(readlink "$SWIFTBAR_LINK")"
+  warnfix "SwiftBar plugin symlink points elsewhere: $(readlink "$SWIFTBAR_LINK")" "rm -f '$SWIFTBAR_LINK' && ln -s '$SWIFTBAR_SRC' '$SWIFTBAR_LINK'"
 else
   pass "SwiftBar plugin linked at $SWIFTBAR_LINK"
 fi
 
 # -- disk + clock -----------------------------------------------------------
 section "[host]"
-for d in cache logs; do
-  if [[ -w "$d" ]]; then
+for d in cache logs logs/archive; do
+  if [[ -d "$d" && -w "$d" ]]; then
     pass "$d/ writable"
+  elif [[ ! -d "$d" ]]; then
+    warnfix "$d/ missing" "mkdir -p '$d'"
   else
     fail "$d/ not writable"
+  fi
+done
+
+# Log sizes. Any log > 50 MB gets rotated under --fix; otherwise just warn.
+# shellcheck disable=SC1091
+source scripts/lib/log-rotate.sh
+for f in logs/*.log; do
+  [[ -f "$f" ]] || continue
+  sz=$(stat -f "%z" "$f" 2>/dev/null || stat -c "%s" "$f" 2>/dev/null || echo 0)
+  if (( sz > LOG_ROTATE_THRESHOLD_BYTES )); then
+    if [[ "$FIX" = "1" ]]; then
+      rotate_if_large "$f" && fixed "$f: rotated (was ${sz} bytes)"
+    else
+      warn "$f: ${sz} bytes (> ${LOG_ROTATE_THRESHOLD_BYTES}) — run \`bin/doctor --fix\` to rotate"
+    fi
   fi
 done
 
@@ -277,11 +367,110 @@ if [[ -n "$remote_date" ]]; then
   fi
 fi
 
+# -- smoke (v1.0.0) — end-to-end driver integration ping --------------------
+# Goal: one command the user can cron / CI that exercises every driver path
+# we depend on at runtime. Must be idempotent (no writes that survive the
+# call) and cheap (a handful of HTTP GETs per project).
+#
+# For each project we ping:
+#   tracker_probe → tracker_search (limit=1, empty-ish JQL)
+#   host_probe    → host_current_user
+#   chat_probe    (no chat_send to avoid spamming the user; smoke is safe
+#                  by default. Use --smoke --chat to also send a heartbeat.)
+SMOKE_CHAT=0
+for arg in "$@"; do [[ "$arg" == "--chat" ]] && SMOKE_CHAT=1; done
+
+if (( SMOKE == 1 )); then
+  section "[smoke]"
+  SMOKE_FAILS=0
+  # shellcheck disable=SC1091
+  source scripts/drivers/tracker/_dispatch.sh 2>/dev/null || {
+    warn "tracker dispatcher not found — smoke limited to legacy paths"
+  }
+  # shellcheck disable=SC1091
+  source scripts/drivers/host/_dispatch.sh 2>/dev/null || true
+  # shellcheck disable=SC1091
+  source scripts/drivers/chat/_dispatch.sh 2>/dev/null || true
+
+  for pid in $(cfg_project_list); do
+    info "─ project: $pid"
+    cfg_project_activate "$pid" >/dev/null 2>&1 || {
+      warn "  $pid: activate failed"
+      SMOKE_FAILS=$((SMOKE_FAILS+1))
+      continue
+    }
+
+    # tracker
+    if type -t tracker_probe >/dev/null 2>&1; then
+      if tracker_probe >/dev/null 2>&1; then
+        # tracker_search with a minimal query — just prove the round-trip.
+        if tracker_search "limit=1" 1 >/dev/null 2>&1; then
+          pass "  tracker[$TRACKER_KIND]: probe + search"
+        else
+          fail "  tracker[$TRACKER_KIND]: search failed after probe"
+          SMOKE_FAILS=$((SMOKE_FAILS+1))
+        fi
+      else
+        fail "  tracker[$TRACKER_KIND]: probe failed"
+        SMOKE_FAILS=$((SMOKE_FAILS+1))
+      fi
+    else
+      info "  tracker: driver layer not loaded, skipped"
+    fi
+
+    # host
+    if type -t host_probe >/dev/null 2>&1; then
+      if host_probe >/dev/null 2>&1; then
+        me=$(host_current_user 2>/dev/null || true)
+        if [[ -n "$me" ]]; then
+          pass "  host[$HOST_KIND]: probe OK as $me"
+        else
+          warn "  host[$HOST_KIND]: probe OK but current_user empty"
+        fi
+      else
+        fail "  host[$HOST_KIND]: probe failed"
+        SMOKE_FAILS=$((SMOKE_FAILS+1))
+      fi
+    else
+      info "  host: driver layer not loaded, skipped"
+    fi
+
+    # chat
+    if type -t chat_probe >/dev/null 2>&1; then
+      if chat_probe >/dev/null 2>&1; then
+        pass "  chat[$CHAT_KIND]: probe OK"
+        if (( SMOKE_CHAT == 1 )) && type -t chat_send >/dev/null 2>&1; then
+          if chat_send "🩺 doctor --smoke: $pid at $(date +%H:%M)" >/dev/null 2>&1; then
+            pass "  chat[$CHAT_KIND]: heartbeat sent"
+          else
+            warn "  chat[$CHAT_KIND]: heartbeat failed"
+          fi
+        fi
+      else
+        fail "  chat[$CHAT_KIND]: probe failed"
+        SMOKE_FAILS=$((SMOKE_FAILS+1))
+      fi
+    else
+      info "  chat: driver layer not loaded, skipped"
+    fi
+  done
+
+  if (( SMOKE_FAILS == 0 )); then
+    pass "smoke: all integrations reachable across all projects"
+  else
+    fail "smoke: $SMOKE_FAILS integration(s) unreachable"
+  fi
+fi
+
 # -- summary ----------------------------------------------------------------
 section "[summary]"
-if (( HARD_FAILS == 0 && WARNS == 0 )); then
+if (( JSON_OUT == 1 )); then
+  printf '{"fails":%d,"warns":%d,"fixed":%d}\n' "$HARD_FAILS" "$WARNS" "$FIXED"
+elif (( HARD_FAILS == 0 && WARNS == 0 )); then
   echo "  ${GREEN}${BOLD}All checks passed.${RST}"
+  (( FIXED > 0 )) && echo "  (${FIXED} fix(es) applied)"
   exit 0
+else
+  echo "  ${HARD_FAILS} fail(s), ${WARNS} warn(s), ${FIXED} fix(es) applied"
 fi
-echo "  ${HARD_FAILS} fail(s), ${WARNS} warn(s)"
 [[ $HARD_FAILS -gt 0 ]] && exit 1 || exit 0

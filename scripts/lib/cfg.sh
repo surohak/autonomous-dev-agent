@@ -170,6 +170,16 @@ cfg_project_activate() {
   [[ -z "$tg_key" ]] && tg_key="default"
   export TG_OFFSET_FILE="$GLOBAL_CACHE_DIR/telegram-offset-$tg_key.txt"
 
+  # v0.4 driver kind aliases. The per-project {tracker,host,chat}.kind
+  # values flow through _cfg_resolve.py as concrete env vars; we also set
+  # the short TRACKER_KIND / HOST_KIND / CHAT_KIND names so the dispatchers
+  # can pick a driver without knowing the legacy env-var prefixes. Defaults
+  # pick up the v0.3-era Jira/GitLab/Telegram combo so existing installs
+  # light up the drivers with zero config change.
+  export TRACKER_KIND="${TRACKER_KIND:-jira-cloud}"
+  export HOST_KIND="${HOST_KIND:-gitlab}"
+  export CHAT_KIND="${CHAT_KIND:-telegram}"
+
   # One-shot legacy migration: if the old flat-cache file exists and the new
   # per-project file doesn't, move it. Keeps v0.2 users' state on upgrade.
   _cfg_migrate_legacy_state

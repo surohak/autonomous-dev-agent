@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a new capability or UX improvement.
+title: "[feat] <short description>"
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: "What friction or missing capability are you hitting today?"
+      placeholder: |
+        "When I do X, I expect Y but the agent requires me to …"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: "If you have a concrete design in mind, sketch it. Otherwise skip."
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: "Pick the tightest match. Drivers go in driver-request.yml."
+      options:
+        - "watcher / polling"
+        - "telegram handler"
+        - "jira workflow discovery"
+        - "install / doctor"
+        - "swiftbar / menu bar"
+        - "tempo / worklogs"
+        - "docs only"
+        - "other"
+    validations:
+      required: true
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: "I'd like to open a PR for this"

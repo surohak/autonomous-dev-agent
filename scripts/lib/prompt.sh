@@ -22,6 +22,8 @@
 #   {{GLOBAL_CACHE_DIR}}    — shared cache root,       e.g. ".../cache/global"
 #   {{SKILL_DIR}}           — absolute path to the skill's install dir
 #   {{AGENT_MODEL}}         — Cursor CLI model for the default phase
+#   {{RECENT_LESSONS}}      — last N entries from PROJECT_CACHE_DIR/lessons.md,
+#                              rendered as a bullet list. Empty string if none.
 #
 # Usage:
 #   source lib/env.sh; source lib/cfg.sh; source lib/prompt.sh
@@ -93,6 +95,26 @@ tokens["SSR_GITLAB_PROJECT_ENCODED"]  = qenc(tokens["SSR_GITLAB_PROJECT"])
 tokens["BLOG_GITLAB_PROJECT_ENCODED"] = qenc(tokens["BLOG_GITLAB_PROJECT"])
 tokens["OWNER_SLACK_ID"] = owner_slack
 tokens["REVIEWERS_POOL"] = reviewers_pool
+
+# v0.5.0 — recent lessons. The agent's post-mortem step appends bullets to
+# PROJECT_CACHE_DIR/lessons.md. We pull the last N (default 8) and inject
+# them into the executor prompt, so the next run learns from the last ones.
+# Keep the rendering cheap: a flat text read + tail.
+RECENT_LESSONS = ""
+lessons_path = os.path.join(os.environ.get("PROJECT_CACHE_DIR",""), "lessons.md") if tokens["PROJECT_CACHE_DIR"] else ""
+max_lessons = int(os.environ.get("LESSONS_MAX", "8") or 8)
+if lessons_path and os.path.isfile(lessons_path):
+    try:
+        raw = open(lessons_path).read().splitlines()
+    except Exception:
+        raw = []
+    # Keep only bullet lines ("- ..."), newest first. The agent is asked to
+    # append newest-at-bottom, so we take the tail.
+    bullets = [l for l in raw if l.strip().startswith(("-","*"))]
+    tail = bullets[-max_lessons:]
+    if tail:
+        RECENT_LESSONS = "\n".join(tail)
+tokens["RECENT_LESSONS"] = RECENT_LESSONS
 
 text = open(os.environ["PROMPT_FILE"]).read()
 for k, v in tokens.items():

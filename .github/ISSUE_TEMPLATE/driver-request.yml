@@ -1,0 +1,59 @@
+name: Driver request
+description: Add support for a new tracker, host, or chat backend (post-v0.4 driver layer).
+title: "[driver] <tracker|host|chat>: <name>"
+labels: ["driver", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The v0.4 driver layer makes tracker/host/chat backends pluggable. Use
+        this template to propose (or pick up) a new one — check `docs/DRIVERS.md`
+        for the contract every driver must implement.
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Driver layer
+      options:
+        - "tracker (Jira, GitHub Issues, Linear, …)"
+        - "host (GitLab, GitHub, Bitbucket, …)"
+        - "chat (Telegram, Slack, …)"
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Backend name
+      placeholder: "e.g. linear, bitbucket, discord"
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: API surface / reference docs
+      description: "Links to the backend's REST/GraphQL docs + auth details."
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Contract mapping
+      description: "How each interface function maps to the backend. Leave 'TBD' for anything unclear."
+      value: |
+        tracker_search      ->
+        tracker_get         ->
+        tracker_transition  ->
+        tracker_comment     ->
+    validations:
+      required: true
+  - type: textarea
+    id: auth
+    attributes:
+      label: Required secrets
+      description: "What env vars must the user put in secrets.env?"
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: "I'd like to write the driver"
+        - label: "I'd like help / pairing from a maintainer"

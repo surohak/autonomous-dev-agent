@@ -4,11 +4,12 @@
 > spawns agent runs in the Cursor IDE, opens MRs on GitLab, and talks back to
 > you on Telegram — all while you eat lunch.
 
-**Status: v0.3 (fork-friendly, multi-project).** Jira Cloud + GitLab +
-Telegram + Tempo Cloud. One install can manage several projects, each with
-its own Jira board, GitLab group, Telegram bot, and agent model. Alternate
-drivers (GitHub, Slack, Linear, …) are on the roadmap — see
-[CHANGELOG.md](./CHANGELOG.md).
+**Status: v0.4 (driver layer).** Mix-and-match **trackers**
+(Jira Cloud, GitHub Issues, Linear), **code hosts** (GitLab, GitHub), and
+**chat platforms** (Telegram, Slack) per project. One install can manage
+several projects, each with its own driver stack, agent model, and
+credentials. See [docs/DRIVERS.md](./docs/DRIVERS.md) for the catalogue
+and [CHANGELOG.md](./CHANGELOG.md) for release history.
 
 ## What it actually does
 
@@ -25,7 +26,115 @@ drivers (GitHub, Slack, Linear, …) are on the roadmap — see
 Everything runs under launchd on your Mac. Nothing talks to a SaaS you don't
 already own. Your tokens never leave `~/.cursor/skills/`.
 
-## 60-second install
+## Install
+
+The agent runs on macOS and drives the Cursor CLI, so step 1 is always:
+get the toolchain ready, then clone-and-install.
+
+### 1. Base toolchain (always)
+
+macOS 13+ (tested on 14 Sonoma and 15 Sequoia). Everything else flows
+through Homebrew.
+
+```bash
+# Homebrew itself — skip if you already have it.
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Core deps used by every driver and every script.
+brew install jq python@3 curl git
+```
+
+### 2. Cursor IDE + Cursor CLI
+
+The agent invokes the Cursor CLI (`agent`/`cursor-agent`) to drive the
+LLM. Install both:
+
+```bash
+# Option A — Homebrew cask (recommended on macOS).
+brew install --cask cursor
+
+# Option B — direct download: https://www.cursor.com/download
+```
+
+Then install the `cursor` and `cursor-agent` command-line binaries:
+
+1. Open Cursor → Cmd-Shift-P → "Shell Command: Install 'cursor' command
+   in PATH".
+2. Install Cursor CLI for agent execution:
+
+   ```bash
+   curl https://cursor.com/install -fsS | bash
+   ```
+
+   This puts `cursor-agent` on your PATH (usually `~/.local/bin/`).
+   See [docs.cursor.com/cli](https://docs.cursor.com/en/cli/overview) for
+   auth (`cursor-agent login`) and model selection.
+
+Verify:
+
+```bash
+cursor --version && cursor-agent --version
+```
+
+### 3. MCP servers inside Cursor (optional but recommended)
+
+MCP servers give Cursor — and therefore the agent runs it spawns — native
+access to your tracker, chat, and design tools. None of them are
+*required* (everything still works through the CLIs below), but they make
+Cursor smarter when it needs to read a Jira ticket, a Figma frame, or a
+Slack thread while coding.
+
+Install from **Cursor Settings → MCP → "+ Add new global MCP server"** or
+by editing `~/.cursor/mcp.json`. Relevant ones for this agent:
+
+| MCP             | Why you'd add it                                            | How                                                         |
+|-----------------|-------------------------------------------------------------|-------------------------------------------------------------|
+| **Atlassian**   | Agent can read a Jira ticket's full body + linked pages.    | Cursor Plugin → Atlassian → sign in                         |
+| **GitLab**      | Agent can read MR threads, pipelines, file history.         | Cursor Plugin → GitLab → sign in                            |
+| **GitHub**      | Same as GitLab but for GH repos + PRs.                      | Cursor Plugin → GitHub → sign in                            |
+| **Slack**       | Agent can read the thread it's asked about.                 | Cursor Plugin → Slack → sign in                             |
+| **Figma**       | `figma-use` / design-to-code workflows.                     | Cursor Plugin → Figma → sign in                             |
+| **Context7**    | Live library docs when agent hits a library it doesn't know.| `npx -y @upstash/context7-mcp` (add to `~/.cursor/mcp.json`)|
+
+Full catalogue and JSON examples:
+[docs.cursor.com/en/context/mcp](https://docs.cursor.com/en/context/mcp).
+
+### 4. Driver-specific CLIs
+
+Drivers are picked per-project — install only the CLIs for drivers you'll
+actually configure.
+
+| Driver                     | Install                                        | Auth                                                   |
+|----------------------------|------------------------------------------------|--------------------------------------------------------|
+| tracker `jira-cloud`       | (curl+jq already installed)                    | Atlassian Cloud email + API token (`id.atlassian.com`) |
+| tracker `github-issues`    | `brew install gh`                              | `gh auth login`                                        |
+| tracker `linear`           | (curl already installed)                       | Linear personal API key (Linear → Settings → API)      |
+| host `gitlab`              | `brew install glab`                            | `glab auth login` + GitLab personal access token       |
+| host `github`              | `brew install gh`                              | `gh auth login` (same as the tracker driver)           |
+| chat `telegram`            | (curl already installed)                       | Bot token from `@BotFather` + numeric chat id          |
+| chat `slack`               | (curl already installed)                       | Slack bot token (`xoxb-…`) + channel id                |
+| worklog (optional) `tempo` | (curl already installed)                       | Tempo Cloud API token (Tempo → Settings → API)         |
+
+Verify:
+
+```bash
+gh auth status      # if you picked GitHub drivers
+glab auth status    # if you picked GitLab host
+```
+
+### 5. Optional extras
+
+Skip any of these; the agent degrades gracefully.
+
+| Tool                  | Enables                                                                                    | Install                                                                      |
+|-----------------------|--------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| [SwiftBar](https://swiftbar.app) | Menu-bar icon with live status + start/stop/run-once.                           | `brew install --cask swiftbar`                                               |
+| `ffmpeg`              | Voice-note transcription via local `whisper.cpp` (audio→WAV conversion).                   | `brew install ffmpeg`                                                        |
+| `whisper.cpp`         | Local offline voice transcription (fallback when `OPENAI_API_KEY` isn't set).              | `brew install whisper-cpp` then `whisper-cli --help`                         |
+| OpenAI API key        | Faster cloud voice transcription + screenshot OCR via Vision.                              | Put `OPENAI_API_KEY=sk-…` in `secrets.env`                                   |
+| Tempo                 | One-tap worklog suggestions in the daily digest and code-review flow.                      | Tempo Cloud API token in `secrets.env` as `TEMPO_API_TOKEN`                  |
+
+### 6. Clone + run the installer
 
 ```bash
 git clone https://github.com/<you>/autonomous-dev-agent.git
@@ -35,32 +144,27 @@ bash bin/install.sh
 
 The installer:
 
-1. Verifies `python3`, `jq`, `curl`, `glab`, `cursor` are on `PATH`.
+1. Verifies `python3`, `jq`, `curl`, `git`, `cursor`, `cursor-agent` are on `PATH`
+   — and the host CLI for whichever host driver you pick (`gh` / `glab`).
 2. Copies files into `~/.cursor/skills/autonomous-dev-agent/`.
-3. Runs `bin/init.sh` to collect your Jira/GitLab/Telegram/Tempo credentials.
+3. Runs `bin/init.sh` interactively to collect credentials for your
+   chosen drivers (trackers, host, chat, optional Tempo).
 4. Renders `SKILL.md` and every prompt from templates using your config.
 5. Generates `~/Library/LaunchAgents/com.<user>.*.plist` and loads them.
-6. If [SwiftBar](https://swiftbar.app) is installed, links
-   `scripts/menubar/dev-agent.30s.sh` into its plugins folder so you get a
-   menu-bar icon with service health + start/stop/run-once actions. Opt out
-   with `--skip-swiftbar`.
+6. If SwiftBar is installed, symlinks `scripts/menubar/dev-agent.30s.sh`
+   into its plugins folder. Opt out with `--skip-swiftbar`.
 
-Verify with:
+### 7. Verify
 
 ```bash
-bash bin/doctor.sh    # pings Jira, Telegram, GitLab, Tempo; checks launchd.
+bash bin/doctor.sh            # checks every configured driver + launchd.
+bash bin/doctor.sh --fix      # applies safe auto-remediations.
+bash bin/doctor.sh --smoke    # end-to-end integration ping per project.
 ```
 
-Full walkthrough (with screenshots): [docs/SETUP.md](./docs/SETUP.md).
-
-## Requirements
-
-- macOS 13+ (tested 14 Sonoma, 15 Sequoia).
-- Cursor IDE installed and the `cursor` CLI on `PATH`.
-- Atlassian Cloud (Jira + optional Tempo).
-- GitLab (self-hosted or `gitlab.com`).
-- A Telegram bot + your numeric chat ID.
-- `brew install jq glab python@3`.
+Full walkthrough with screenshots: [docs/SETUP.md](./docs/SETUP.md).
+See [docs/DRIVERS.md](./docs/DRIVERS.md) for per-driver config shapes and
+[docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) for common failures.
 
 ## Configuration model
 
@@ -168,6 +272,10 @@ autonomous-dev-agent/
 ## Learn more
 
 - [docs/SETUP.md](./docs/SETUP.md) — step-by-step install
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — one-page map of how it fits together
+- [docs/DRIVERS.md](./docs/DRIVERS.md) — driver catalogue + how to write a new one
+- [docs/STABILITY.md](./docs/STABILITY.md) — v1 freeze: config, interface, command vocab
+- [docs/MIGRATION.md](./docs/MIGRATION.md) — how to move between versions
 - [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) — common failure modes
 - [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) — how to contribute a driver
 - [CHANGELOG.md](./CHANGELOG.md) — release history + roadmap

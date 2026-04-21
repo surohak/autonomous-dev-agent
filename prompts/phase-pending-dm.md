@@ -7,7 +7,7 @@ When the user (in Cursor IDE chat) says anything like:
 - `Send pending Slack DMs`
 - `Drain DM queue`
 
-…read and drain the queue at `~/.cursor/skills/autonomous-dev-agent/cache/pending-dm/*.json`
+…read and drain the queue at `{{PROJECT_CACHE_DIR}}/pending-dm/*.json`
 using your loaded Slack MCP.
 
 ## Why this exists
@@ -20,7 +20,7 @@ a task file and asks the user to paste a one-liner in IDE chat — which lands h
 
 ## Steps
 
-For each `cache/pending-dm/<TK_KEY>.json` (or just the single TK_KEY if specified):
+For each `{{PROJECT_CACHE_DIR}}/pending-dm/<TK_KEY>.json` (or just the single TK_KEY if specified):
 
 1. Read the task JSON. Required fields: `ticket_key`, `slack_user_id`, `message`,
    `approver_name`. Optional: `mr_url`, `jira_url`.
@@ -35,7 +35,7 @@ For each `cache/pending-dm/<TK_KEY>.json` (or just the single TK_KEY if specifie
    `slack_post_message`, `chat_postMessage`), use the first available one.
 
 3. On success:
-   - Move the task file to `cache/pending-dm/sent/<TK_KEY>-<unix_ts>.json` so
+   - Move the task file to `{{PROJECT_CACHE_DIR}}/pending-dm/sent/<TK_KEY>-<unix_ts>.json` so
      it's not re-sent. Create the `sent/` dir if needed.
    - Add a `sent_at` and `slack_message_link` (if the tool returns one) to the
      moved file.
@@ -52,7 +52,7 @@ For each `cache/pending-dm/<TK_KEY>.json` (or just the single TK_KEY if specifie
 
 - Do NOT run Phase 1 (discovery), Phase 2 (implementation), Phase 8 (review),
   Phase 9 (CI-fix), or any other workflow phase.
-- Do NOT modify any files outside `cache/pending-dm/`.
+- Do NOT modify any files outside `{{PROJECT_CACHE_DIR}}/pending-dm/`.
 - Do NOT commit or push anything.
 - Send at most one Telegram message per task (success or failure).
 - If the queue is empty, reply in IDE chat with a short "No pending DMs." —
