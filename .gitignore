@@ -1,0 +1,40 @@
+# Personal config + secrets — never commit these.
+config.json
+secrets.env
+
+# Legacy root SETUP.md — pre-public personal setup notes. The public version
+# lives at docs/SETUP.md and is committed.
+/SETUP.md
+
+# Rendered-at-init artifacts (templates are committed, rendered files aren't).
+SKILL.md
+prompts/*.rendered.md
+
+# Runtime state — all machine-local, per-run, or contains teammate data.
+cache/
+logs/
+
+# macOS noise.
+.DS_Store
+._*
+
+# Editor / IDE noise.
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node (not used but common to accidentally add)
+node_modules/
+
+# Installer artifacts (launchd plists are generated at install time).
+scripts/launchd/*.plist
+!scripts/launchd/*.plist.template
+
+# Test sandboxes.
+devagent-tests.*/

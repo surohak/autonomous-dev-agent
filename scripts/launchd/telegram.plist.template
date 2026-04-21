@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LAUNCHD_LABEL_PREFIX}}.dev-agent-telegram{{PROJECT_SUFFIX}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{{SKILL_DIR}}/scripts/telegram-handler.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>WorkingDirectory</key>
+    <string>{{SKILL_DIR}}</string>
+    <key>StandardOutPath</key>
+    <string>{{SKILL_DIR}}/logs/telegram-handler{{PROJECT_SUFFIX}}.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{SKILL_DIR}}/logs/telegram-handler{{PROJECT_SUFFIX}}-error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:{{HOME}}/.local/bin</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
+        <key>AGENT_PROJECT</key>
+        <string>{{AGENT_PROJECT}}</string>
+    </dict>
+</dict>
+</plist>

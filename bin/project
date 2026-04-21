@@ -1,0 +1,215 @@
+#!/bin/bash
+# bin/project — CLI wizard to manage projects in config.json.
+#
+# Usage:
+#   bin/project list                 show configured projects
+#   bin/project add                  interactive wizard (prompts for every field)
+#   bin/project add <id>             non-interactive, prompts only for missing bits
+#   bin/project remove <id>          delete a project by id
+#   bin/project show <id>            pretty-print a project's config block
+#
+# The file is a thin ergonomic wrapper over config.json JSON edits. All writes
+# go through a Python helper for safe JSON I/O (no fragile sed). A backup
+# copy is written next to the file before every destructive operation.
+
+set -euo pipefail
+
+SKILL_DIR="${SKILL_DIR:-$HOME/.cursor/skills/autonomous-dev-agent}"
+CONFIG="$SKILL_DIR/config.json"
+
+[[ -f "$CONFIG" ]] || { echo "error: $CONFIG not found. Run bin/init.sh first." >&2; exit 2; }
+
+# shellcheck disable=SC1091
+source "$SKILL_DIR/scripts/lib/cfg.sh"
+
+sub="${1:-}"
+shift || true
+
+usage() {
+  cat <<EOF
+bin/project — manage projects in config.json
+
+  bin/project list               list configured projects (✓ = default)
+  bin/project show <id>          show one project's config
+  bin/project add [<id>]         wizard: append a new project
+  bin/project remove <id>        remove a project (keeps cache/projects/<id>/)
+
+Config: $CONFIG
+EOF
+}
+
+# --- list -----------------------------------------------------------------
+if [[ "$sub" == "list" || -z "$sub" ]]; then
+  python3 - "$CONFIG" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+if "projects" not in cfg:
+    # v0.2 flat config → implicit single "default" project
+    print(f"✓ default  — (flat v0.2 config — run `bin/project add <id>` to add a 2nd project)")
+    sys.exit(0)
+default = cfg.get("defaultProject") or (cfg["projects"][0]["id"] if cfg["projects"] else "")
+for p in cfg["projects"]:
+    mark = "✓" if p["id"] == default else " "
+    tr   = (p.get("tracker") or {})
+    key  = tr.get("project") or "?"
+    site = tr.get("siteUrl", "")
+    name = p.get("name", "")
+    print(f"{mark} {p['id']:<14} {key:<8} {name}  {site}")
+PY
+  exit 0
+fi
+
+# --- show -----------------------------------------------------------------
+if [[ "$sub" == "show" || "$sub" == "info" ]]; then
+  id="${1:-}"
+  [[ -n "$id" ]] || { echo "Usage: bin/project show <id>" >&2; exit 2; }
+  python3 - "$CONFIG" "$id" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+pid = sys.argv[2]
+projects = cfg.get("projects") or [{"id":"default", **{k:v for k,v in cfg.items() if k not in ("projects","defaultProject","owner","chat","time","agent")}}]
+for p in projects:
+    if p["id"] == pid:
+        print(json.dumps(p, indent=2))
+        sys.exit(0)
+print(f"no such project: {pid}", file=sys.stderr)
+sys.exit(1)
+PY
+  exit $?
+fi
+
+# --- add ------------------------------------------------------------------
+if [[ "$sub" == "add" ]]; then
+  id="${1:-}"
+  if [[ -z "$id" ]]; then
+    read -r -p "project id (short, lowercase, no spaces — e.g. 'acme' or 'core'): " id
+  fi
+  [[ "$id" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || {
+    echo "invalid id: '$id' (use lowercase letters, digits, dash, underscore)" >&2
+    exit 2
+  }
+
+  # Pre-flight: fail early if id collides, before asking 7 questions.
+  if python3 -c "import json,sys; c=json.load(open(sys.argv[1])); ps=c.get('projects',[]); sys.exit(0 if any(p['id']==sys.argv[2] for p in ps) else 1)" "$CONFIG" "$id"; then
+    echo "project '$id' already exists — edit $CONFIG directly or remove first with: bin/project remove $id" >&2
+    exit 2
+  fi
+
+  echo
+  echo "Adding project '$id' — press Enter to skip optional fields."
+  echo
+
+  read -r -p "display name (e.g. 'Acme Web App'): " name
+  read -r -p "jira site URL (e.g. https://acme.atlassian.net): " site
+  read -r -p "jira project key (e.g. ACME): " key
+  read -r -p "gitlab repositories (comma-separated group/project paths, optional): " repos
+  read -r -p "telegram chat id (Enter = inherit root): " chat_id
+  read -r -p "telegram bot token env var name (Enter = inherit root / TELEGRAM_BOT_TOKEN): " bot_env
+  read -r -p "agent model override (Enter = inherit root): " model
+
+  # Pipe to python to mutate config.json safely + write a timestamped backup.
+  SKILL_DIR="$SKILL_DIR" CONFIG="$CONFIG" \
+  PROJ_ID="$id" PROJ_NAME="$name" PROJ_SITE="$site" PROJ_KEY="$key" \
+  PROJ_REPOS="$repos" PROJ_CHAT="$chat_id" PROJ_BOT_ENV="$bot_env" \
+  PROJ_MODEL="$model" \
+  python3 - <<'PY'
+import json, os, shutil, time
+cfg_path = os.environ["CONFIG"]
+with open(cfg_path) as f:
+    cfg = json.load(f)
+backup = f"{cfg_path}.bak.{int(time.time())}"
+shutil.copy2(cfg_path, backup)
+
+# Normalise v0.2 flat config into v0.3 (one implicit "default" project)
+# before appending the new one, so users can grow incrementally.
+if "projects" not in cfg:
+    # Pluck project-shaped fields off the root and move them into 'default'.
+    flat_keys = ("tracker", "repositories", "workflow", "reviewers", "conventions")
+    default = {"id": "default"}
+    for k in flat_keys:
+        if k in cfg:
+            default[k] = cfg.pop(k)
+    # Back-compat: jiraSite + jiraProject were the v0.2 names.
+    if "jiraSite" in cfg or "jiraProject" in cfg:
+        default.setdefault("tracker", {})
+        if "jiraSite"    in cfg: default["tracker"].setdefault("siteUrl",  cfg.pop("jiraSite"))
+        if "jiraProject" in cfg: default["tracker"].setdefault("project",  cfg.pop("jiraProject"))
+    cfg["projects"]       = [default]
+    cfg["defaultProject"] = "default"
+
+# Build the new project block, skipping empty optional fields.
+proj = {"id": os.environ["PROJ_ID"]}
+if os.environ.get("PROJ_NAME"): proj["name"] = os.environ["PROJ_NAME"]
+
+tracker = {}
+if os.environ.get("PROJ_SITE"): tracker["siteUrl"]  = os.environ["PROJ_SITE"]
+if os.environ.get("PROJ_KEY"):  tracker["project"]  = os.environ["PROJ_KEY"]
+if tracker: proj["tracker"] = tracker
+
+if os.environ.get("PROJ_REPOS"):
+    proj["repositories"] = [r.strip() for r in os.environ["PROJ_REPOS"].split(",") if r.strip()]
+
+chat = {}
+if os.environ.get("PROJ_CHAT"):    chat["chatId"]   = os.environ["PROJ_CHAT"]
+if os.environ.get("PROJ_BOT_ENV"): chat["tokenEnv"] = os.environ["PROJ_BOT_ENV"]
+if chat: proj["chat"] = chat
+
+if os.environ.get("PROJ_MODEL"):
+    proj["agent"] = {"model": os.environ["PROJ_MODEL"]}
+
+cfg["projects"].append(proj)
+
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print(f"  added project '{proj['id']}'")
+print(f"  backup: {backup}")
+PY
+
+  echo
+  echo "Done. Next steps:"
+  echo "  1. Validate with: bin/doctor.sh"
+  echo "  2. If this project uses a different Telegram bot, add the new token"
+  echo "     to secrets.env under the env-var name you chose, then re-run bin/install.sh"
+  echo "     to regenerate the per-bot LaunchAgent plists."
+  exit 0
+fi
+
+# --- remove ---------------------------------------------------------------
+if [[ "$sub" == "remove" || "$sub" == "rm" || "$sub" == "delete" ]]; then
+  id="${1:-}"
+  [[ -n "$id" ]] || { echo "Usage: bin/project remove <id>" >&2; exit 2; }
+
+  CONFIG="$CONFIG" PROJ_ID="$id" python3 - <<'PY'
+import json, os, shutil, time, sys
+cfg_path = os.environ["CONFIG"]
+pid = os.environ["PROJ_ID"]
+with open(cfg_path) as f:
+    cfg = json.load(f)
+projects = cfg.get("projects")
+if not projects:
+    print(f"config is a flat v0.2 file with no projects[] array — nothing to remove", file=sys.stderr)
+    sys.exit(1)
+before = len(projects)
+cfg["projects"] = [p for p in projects if p["id"] != pid]
+if len(cfg["projects"]) == before:
+    print(f"no project with id '{pid}'", file=sys.stderr); sys.exit(1)
+
+# If we just removed the default, pick the next remaining one (if any).
+if cfg.get("defaultProject") == pid:
+    cfg["defaultProject"] = cfg["projects"][0]["id"] if cfg["projects"] else None
+
+backup = f"{cfg_path}.bak.{int(time.time())}"
+shutil.copy2(cfg_path, backup)
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=2); f.write("\n")
+print(f"  removed project '{pid}'")
+print(f"  backup: {backup}")
+print(f"  note: cache/projects/{pid}/ left on disk in case you want to reimport — delete manually if not needed")
+PY
+  echo "Re-run bin/install.sh to prune per-project LaunchAgents (e.g. telegram plists)."
+  exit 0
+fi
+
+usage
+exit 2
