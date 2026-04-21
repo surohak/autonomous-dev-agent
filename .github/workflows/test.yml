@@ -1,0 +1,96 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow contributors to trigger manually
+  workflow_dispatch:
+
+# One run per branch; cancel in-flight when new commits land.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: offline-tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Matrix covers the last three macOS-hosted runner images. They map to
+    # macOS 13 Ventura (Intel), macOS 14 Sonoma (arm64), macOS 15 Sequoia
+    # (arm64). Linux isn't supported by launchd-driven code paths, but the
+    # offline test suite is shell-only and portable, so we run Ubuntu as a
+    # sanity check against accidental macOS-only assumptions.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          echo "OS: ${{ matrix.os }}"
+          bash --version
+          python3 --version
+          jq --version || echo "(jq missing on runner; tests will install if needed)"
+
+      - name: Install jq (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Ensure jq on macOS runners
+        if: startsWith(matrix.os, 'macos-')
+        # jq is preinstalled on macOS runners. Brew-install only if missing
+        # (defensive — future image trims could remove it).
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            brew install jq
+          fi
+
+      - name: Run offline test suite
+        # run-tests.sh discovers every test_*.sh automatically. No network.
+        run: bash scripts/tests/run-tests.sh
+
+      - name: Lint shell syntax
+        # bash -n parses every shell script in the repo without executing it.
+        # Catches obvious syntax errors even for scripts the test suite
+        # doesn't exercise directly.
+        run: |
+          fail=0
+          while IFS= read -r -d '' f; do
+            bash -n "$f" || { echo "Syntax error in $f"; fail=1; }
+          done < <(find bin scripts -type f \( -name '*.sh' -o -name '*.template' \) -print0)
+          exit "$fail"
+
+      - name: Lint config.json schema doc
+        run: python3 -c 'import json; json.load(open("docs/CONFIG_SCHEMA.json"))'
+
+  doctor-offline:
+    # Run bin/doctor against the example config to assert the schema lint
+    # + offline checks all pass. Networked probes are expected to fail
+    # gracefully — we only assert the overall script is well-formed.
+    name: doctor-offline (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: offline
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            brew install jq
+          fi
+      - name: Schema-lint example config
+        run: |
+          if [[ -f config.example.json ]]; then
+            CFG=config.example.json SECRETS_FILE=/dev/null \
+              python3 scripts/lib/_cfg_lint.py
+          else
+            echo "config.example.json missing — skipping"
+          fi

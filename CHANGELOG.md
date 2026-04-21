@@ -1,0 +1,298 @@
+# Changelog
+
+All notable changes to this project are tracked here. Versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.23] - 2026-04-21
+
+Cumulative patch series (1.0.1 – 1.0.23) covering the cherry-pick
+promote-to-main workflow for multi-ticket stage→main promotions.
+
+### Added (highlights across 1.0.1 – 1.0.23)
+
+- **Combined cherry-pick** (`cherry-pick-combined.py`): promote
+  multiple tickets from a staging branch to `main` in a single MR.
+  De-duplicates commits, sorts chronologically, creates one branch
+  and one MR.
+- **`/cherries` Telegram command**: lists tickets eligible for
+  cherry-pick, shows "Cherry-pick ALL N to main" when multiple
+  tickets share a repo, and per-ticket cherry-pick buttons.
+- **Auto-conflict resolution** via `-X theirs` with a post-merge
+  safety check: if the resolved file diverges from the staging
+  branch HEAD (because later commits under other tickets reshaped
+  it), the script replaces the stale file with the staging HEAD
+  version and amends the commit. Only falls back to manual mode
+  when the amend itself fails.
+- **DM approver flow**: after a successful promote, a follow-up
+  Telegram card offers a "DM <approver>" button that sends a Slack
+  DM with the MR URL and Jira links. Verifies the MR is still open
+  before sending to prevent stale-URL DMs.
+- **Per-ticket fallback buttons** when a combined cherry-pick fails:
+  individual "Cherry-pick <KEY> alone" buttons for each ticket.
+- **Manual-finish copy/paste block** with exact `git cherry-pick`
+  commands when auto-resolution is not possible.
+- **Conflict diagnostics**: conflicting files and staged paths are
+  captured before `git cherry-pick --abort` (not after, which would
+  always return empty) and surfaced in the Telegram message.
+
+### Fixed (highlights across 1.0.1 – 1.0.23)
+
+- Redundant/empty cherry-picks (commits already on main under a
+  different SHA) detected post-hoc without relying on modern git
+  flags (`--empty=drop`, `--skip`) that break on older git versions.
+- `glab mr list` calls now default to `state=opened` (removed
+  `--all` flag) so closed MRs don't false-positive as duplicates.
+- OK/INFO/ERR dispatch in the Telegram handler uses line-oriented
+  `grep` instead of a whole-string glob, so stderr diagnostic
+  breadcrumbs from the Python scripts don't prevent the success
+  path from matching.
+- `promoted.json` entries for closed MRs are detected and handled
+  gracefully by the DM flow.
+
+## [1.0.0] - 2026-04-21
+
+_General availability. Completes the post-v0.3 roadmap (milestones M1–M5)
+in a single release, because nothing between v0.3.0 and v1.0.0 was ever
+shipped to an external user. The sections below are preserved from the
+internal roadmap so readers can see the shape of what landed._
+
+### M1 — Polish
+
+- **watcher.sh** wraps each project's tick in a subshell, so one
+  project's Jira 5xx no longer kills the watcher for all others.
+  Rate-limited crash reports to Telegram.
+- **`/workflow`**, **`/workflow refresh`**, and **`/workflow <project>`**
+  Telegram commands to inspect and re-discover tracker status mappings
+  without editing `config.json`.
+- **`bin/doctor --fix`** auto-remediates common issues (mode 600 on
+  `secrets.env`, missing `cache/` / `logs/archive/`, stale
+  `workflow.json`, broken SwiftBar symlink).
+- **`bin/doctor` schema lint** via `scripts/lib/_cfg_lint.py` — catches
+  typos, unknown driver kinds, duplicate project ids, orphan
+  `defaultProject`, and `chat.tokenEnv` not present in `secrets.env`.
+- **Log rotation** (`scripts/lib/log-rotate.sh`): files > 50 MB move to
+  `logs/archive/`, gzipped in the background, pruned to 14 archives per
+  base name.
+
+### M2 — Adoption readiness
+
+- **GitHub Actions CI** (`.github/workflows/test.yml`) runs the offline
+  test suite across macOS-13/14/15 + Ubuntu, plus shell syntax and
+  `docs/CONFIG_SCHEMA.json` validation on every push/PR.
+- **Issue templates** for `bug`, `feature`, `driver-request` and a PR
+  template checklist matching `docs/CONTRIBUTING.md`.
+- **Dependabot** configured for GitHub Actions only (runtime has no
+  package manifest by design).
+- **`bin/release.sh`** semantic-version bumper: preflight checks (clean
+  tree, default branch, tests green), CHANGELOG promotion, annotated
+  tag, push, draft GitHub Release via `gh`.
+- **`docs/ADOPTION.md`** playbook for onboarding the first external
+  user (candidate selection, session script, friction-point → docs-PR
+  loop).
+
+### M3 — Driver layer (the v0.4 pivot)
+
+- **Driver interfaces** under `scripts/drivers/{tracker,host,chat}/` with
+  `_interface.md` contracts and `_dispatch.sh` loaders keyed off
+  `projects[].<layer>.kind`.
+- **Reference drivers extracted** from existing libs with zero
+  user-visible change: `jira-cloud` (tracker), `gitlab` (host),
+  `telegram` (chat).
+- **New reference drivers**: `github-issues` (tracker), `github` (host),
+  `slack` (chat with Block Kit buttons).
+- **`test_driver_contract.sh`** table-driven suite asserting every
+  driver exports its required functions; Bash 3.2 compatible for stock
+  macOS.
+- **`docs/DRIVERS.md`** + per-driver pages; README rewritten with
+  conditional-requirements table so users install only what their
+  configured drivers need.
+
+### M4 — Personal features
+
+- **Voice notes**: Telegram voice → `scripts/lib/transcribe.sh` (OpenAI
+  Whisper API with local `whisper.cpp` fallback) → re-dispatched as a
+  text command.
+- **Screenshot OCR**: photo attachments → `scripts/lib/ocr.sh` (OpenAI
+  Vision with macOS Vision framework fallback) → injected into command
+  text, reply-context aware for review flows.
+- **Priority queue** with per-project fair-share scoring
+  (`scripts/lib/queue.sh`): score = priority × project weight × age
+  factor. SwiftBar plugin reads `cache/global/queue-snapshot.json` for
+  a zero-network live view; `/queue [<n>]` Telegram command.
+- **Auto-rebase with safe auto-resolve** (`scripts/lib/rebase.sh`):
+  `git merge-tree` conflict probe, whitelisted auto-resolve patterns
+  (lock files, translations, generated docs), `push --force-with-lease`
+  for safety. `/rebase [check] <iid> [<alias>]` Telegram commands.
+- **Lessons loop**: `{{RECENT_LESSONS}}` token in
+  `prompts/phase2-executor.md`, populated from
+  `cache/projects/<id>/lessons.md` so past post-mortems surface into
+  the next run's context.
+- **Daily Tempo delta**: `daily-digest.sh` compares logged vs target
+  hours (`owner.dailyWorkSeconds`, default 8h), appends a one-line
+  summary, and sends a follow-up inline card with a one-tap backfill
+  button when under target.
+
+### M5 — GA
+
+- **v1 stability contract** (`docs/STABILITY.md`): freezes `config.json`
+  shape, driver function signatures, Telegram command vocabulary,
+  callback-data prefixes, and `cache/` layout until v2.0.0.
+- **JSON Schema** at `docs/schemas/config.v1.schema.json` with
+  `schemaVersion` enforcement in `_cfg_lint.py` — unknown majors error,
+  missing version emits a migration hint.
+- **`docs/ARCHITECTURE.md`** one-page map (directory layout, request
+  flows, concurrency + security model, extension points).
+- **`docs/MIGRATION.md`** "upgrade in one line" playbook covering
+  v0.2→v1.0.0 and v0.x→v1.x.
+- **`docs/DEMO_SCRIPT.md`** shot list + captions for the 90-second demo
+  video (video itself ships as a v1.0.0 GitHub Release asset).
+- **`bin/doctor --smoke`** end-to-end integration ping: per-project
+  `tracker_probe` + `tracker_search` + `host_probe` +
+  `host_current_user` + `chat_probe`. Read-only by default;
+  `--smoke --chat` optionally sends a visible heartbeat.
+
+### Breaking changes
+
+None. v0.3.0 configs continue to load unchanged. Adding
+`"schemaVersion": 1` silences the new doctor warning but is not
+required.
+
+### Migration
+
+See [`docs/MIGRATION.md`](./docs/MIGRATION.md). Upgrade path:
+
+```bash
+cd ~/.cursor/skills/autonomous-dev-agent && git pull && bin/install.sh
+```
+
+## [0.3.0] - 2026-04-16
+
+One user, many projects. v0.3 is the "multi-project" release — a single
+install can now manage several Jira boards, GitLab groups, and Telegram bots
+from one watcher process.
+
+### Added
+- **Multi-project config shape** (`config.json` v0.3): root-level
+  `{owner, chat, time, agent}` defaults plus a `projects[]` array of
+  `{id, name, tracker, host, workflow, chat, agent, repositories,
+  reviewers, conventions}` blocks. Legacy v0.2 flat configs are auto-
+  normalised at load time (no user action required); the one-shot
+  `scripts/migrate-config-v0.3.py` converts them on disk if preferred.
+- **Per-project cache namespace**: state files move to
+  `cache/projects/<id>/…` and cross-project state moves to `cache/global/…`.
+  First load migrates the legacy flat `cache/watcher-state.json`,
+  `cache/reviews/`, `cache/pending-dm/`, etc. into `cache/projects/default/`.
+- **Per-project Telegram bots**: `chat.tokenEnv` + `chat.chatId` overrides on
+  the project block. `install.sh` generates one LaunchAgent plist per
+  distinct bot token, each pinned via `AGENT_PROJECT=<id>`. Offset files
+  are scoped per-token so multiple daemons don't race.
+- **Per-project agent model**: `config.agent.model` (root) and
+  `projects[].agent.model`, plus `agent.perPhase.{codereview,cifix,planner,
+  executor}` overrides. `run-agent.sh` picks the right model per phase.
+- **Jira workflow auto-discovery** (`scripts/lib/workflow.sh`): at first
+  use, discovers all Jira transitions/statuses via REST, resolves them to
+  semantic intents (`start`, `push_review`, `after_approve`, `done`,
+  `block`, `unblock`) and caches the mapping under
+  `cache/projects/<id>/workflow.json`. Eliminates the old hardcoded "Ready
+  For QA" strings; teams with custom status names just add
+  `projects[].workflow.aliases` overrides.
+- **Watcher outer loop**: `scripts/watcher.sh` iterates
+  `cfg_project_list` each tick; single-project installs still run once per
+  tick (zero behaviour change).
+- **Telegram UX**: `/project list`, `/project use <id>`,
+  `/project info [<id>]`, `/status all`. Cards from the watcher get a
+  `[project-id]` prefix on multi-project installs.
+- **`bin/project` CLI**: `bin/project list|show|add|remove` wizard for
+  editing `config.json` safely (JSON-aware, writes timestamped `.bak`
+  before every change).
+- **`bin/doctor.sh`**: new `[projects]`, `[agent model]`, and `[workflow]`
+  diagnostic sections — lists every configured project, prints the
+  resolved agent model per phase, and probes Jira workflow discovery
+  (warning on any unresolved semantic intent).
+- Tests: `scripts/tests/test_multi_project.sh`,
+  `scripts/tests/test_chat_override.sh`,
+  `scripts/tests/test_workflow_lib.sh`.
+
+### Changed
+- `scripts/lib/cfg.sh` now exports a full project context on every
+  `cfg_project_activate <id>` call: `PROJECT_ID`, `PROJECT_NAME`,
+  `JIRA_SITE`, `JIRA_PROJECT`, `TELEGRAM_CHAT_ID`, `TELEGRAM_TOKEN_ENV`,
+  `AGENT_MODEL`, `AGENT_MODEL_CODEREVIEW`, `AGENT_MODEL_CIFIX`,
+  `AGENT_MODEL_PLANNER`, `AGENT_MODEL_EXECUTOR`, `PROJECT_CACHE_DIR`,
+  `GLOBAL_CACHE_DIR`, and the state-file paths (`WATCHER_STATE_FILE`,
+  `ACTIVE_RUNS_FILE`, `ESTIMATES_FILE`, `FAILURES_FILE`,
+  `TIME_LOG_FILE`, `WORKFLOW_FILE`, `PROMOTED_FILE`,
+  `GITLAB_JIRA_USERS_FILE`, `LESSONS_FILE`, `TG_OFFSET_FILE`).
+- Re-activation is now idempotent — repeated `cfg_project_activate` calls
+  correctly switch all state paths (previously some vars stuck to the
+  first project).
+- Prompts + `SKILL.md.template` gained `{{PROJECT_ID}}`, `{{PROJECT_NAME}}`,
+  `{{PROJECT_CACHE_DIR}}`, `{{GLOBAL_CACHE_DIR}}`, `{{AGENT_MODEL}}`
+  tokens via `scripts/lib/prompt.sh`.
+- All scripts that touched cache files (`watcher.sh`, `telegram-handler.sh`,
+  `run-agent.sh`, `send-slack-dm.py`, `cherry-pick.py`, every handler
+  under `scripts/handlers/`) now honour the per-project env vars with
+  safe fallbacks to the legacy flat paths.
+
+### Migration notes
+- **v0.2 users**: no action required. The first time `cfg.sh` loads it
+  auto-migrates your existing `cache/` layout into `cache/projects/default/`
+  and normalises your flat `config.json` in memory. If you want the on-disk
+  config to reflect the new shape, run `scripts/migrate-config-v0.3.py`
+  (writes a `.bak`, fully reversible).
+- **Adding a second project**: `bin/project add`, then `bin/install.sh` to
+  regenerate the LaunchAgent plists. If the new project uses a different
+  Telegram bot, put its token in `secrets.env` under your chosen
+  `chat.tokenEnv` name before re-running install.
+
+## [0.2.0] - 2026-04-16
+
+First public release. "Fork-friendly" means: every identity string is a
+config value, every prompt is templated, the installer is idempotent, and
+the test suite runs in under 10 seconds.
+
+### Added
+- `bin/install.sh`, `bin/init.sh` (interactive wizard), `bin/doctor.sh`,
+  `bin/uninstall.sh`.
+- Optional [SwiftBar](https://swiftbar.app) menu-bar plugin at
+  `scripts/menubar/dev-agent.30s.sh`. Shows service health, last-run
+  timestamp + exit code, and one-click start/stop/run-once/logs/doctor
+  actions. `install.sh` auto-symlinks it into
+  `~/Library/Application Support/SwiftBar/Plugins/` when SwiftBar is
+  installed; `--skip-swiftbar` opts out; `uninstall.sh` removes the link.
+  `doctor.sh` includes an info-only SwiftBar presence check.
+- `scripts/launchd/*.plist.template` — tokenised launchd plists rendered at
+  install time.
+- `scripts/lib/prompt.sh` + `test_prompt_lib.sh` — token substitution engine
+  for all rendered templates (`SKILL.md.template`, `prompts/*.md`,
+  `*.plist.template`).
+- `config.example.json` + `secrets.env.example` with inline documentation.
+- `docs/SETUP.md`, `docs/TROUBLESHOOTING.md`, `docs/CONTRIBUTING.md`.
+- `LICENSE` (MIT).
+
+### Changed
+- All hardcoded Jira site URLs, ticket-key prefixes, owner usernames,
+  launchd label prefixes, and absolute repo paths replaced with
+  config-driven values.
+- `scripts/lib/cfg.sh` exports the full identity set: `OWNER_NAME`,
+  `OWNER_FIRST_NAME`, `OWNER_EMAIL`, `COMPANY`, `JIRA_SITE`, `JIRA_PROJECT`,
+  `JIRA_ACCOUNT_ID`, `GITLAB_USER`, `BRANCH_USER`, `TICKET_KEY_PATTERN`,
+  `LAUNCHD_LABEL_PREFIX`, and the per-repo `*_REPO`/`*_BRANCH`/`*_PROJECT`
+  triples.
+- `run-agent.sh` now reads prompts through `prompt_render` so the committed
+  templates never leak personal identifiers.
+
+## [0.1.0] - 2025-12 (pre-public)
+
+Original single-team build used internally. Not released publicly.
+
+### Features at this point
+- Jira ticket monitor + executor (scheduler plist, 30min interval).
+- Watcher polling CI, MR comments, Jira assignments (watcher plist, 2min).
+- Telegram listener with inline keyboards (telegram plist, long-running).
+- Daily digest (digest plist, 16:00).
+- Tempo Cloud worklog suggestions (Phase-1 event capture, 15min rounding,
+  in-place Telegram cards).
+- `/tempo`, `/queue`, `/status`, `/watch`, `/review`, `/help` commands.
+- Shared libs: `jira.sh`, `gitlab.sh`, `telegram.sh`, `tempo.sh`,
+  `timelog.sh`, `timegate.sh`, `jsonstate.py`, `active-run.sh`.

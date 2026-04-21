@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation help
+    url: https://github.com/autonomous-dev-agent/autonomous-dev-agent/blob/main/docs/SETUP.md
+    about: Step-by-step setup guide.
+  - name: Troubleshooting guide
+    url: https://github.com/autonomous-dev-agent/autonomous-dev-agent/blob/main/docs/TROUBLESHOOTING.md
+    about: Common error messages and fixes.

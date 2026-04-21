@@ -1,0 +1,134 @@
+{
+  "_comment": "v0.3 multi-project config. Copy to config.json, or run `bin/init.sh` for an interactive wizard. v0.2 flat configs migrate with `python3 scripts/migrate-config-v0.3.py`. The real config.json is gitignored.",
+
+  "owner": {
+    "name":           "Your Name",
+    "firstName":      "Your",
+    "email":          "you@example.com",
+    "slackUserId":    "",
+    "jiraAccountId":  "",
+    "gitlabUsername": "your.username"
+  },
+
+  "company": "YourCompany",
+
+  "chat": {
+    "_comment":   "Default Telegram bot. Per-project override in projects[].chat lets you have one bot per project. Token env var name lets different projects pull different bot tokens from secrets.env (e.g. TELEGRAM_BOT_TOKEN_SIDE).",
+    "driver":     "telegram",
+    "chatId":     "",
+    "tokenEnv":   "TELEGRAM_BOT_TOKEN"
+  },
+
+  "time": {
+    "_comment":          "Daily digest in 24h HH:MM (local). Worklog cap is max minutes per ticket/day.",
+    "dailyDigest":       "16:00",
+    "worklogCapMinutes": 480
+  },
+
+  "agent": {
+    "_comment":  "Cursor CLI model used by run-agent.sh. `perPhase` overrides per phase: codereview, cifix, planner, executor. Per-project override via projects[].agent.{model,perPhase}.",
+    "model":     "claude-opus-4-7-high",
+    "perPhase": {
+      "codereview": "claude-sonnet-4-7",
+      "cifix":      "claude-sonnet-4-7"
+    }
+  },
+
+  "releaseApprovers": [
+    { "name": "Approver Name", "slackUserId": "", "email": "approver@example.com", "role": "Tech Lead" }
+  ],
+
+  "projects": [
+    {
+      "id":   "your-company",
+      "name": "Main Company Project",
+
+      "tracker": {
+        "kind":    "jira-cloud",
+        "siteUrl": "https://your-company.atlassian.net",
+        "project": "PROJ",
+        "cloudId": ""
+      },
+
+      "host": { "kind": "gitlab" },
+
+      "workflow": {
+        "_comment":  "Workflow is auto-discovered at first run by scripts/lib/workflow.sh and cached in cache/projects/<id>/workflow.json. Only fill in aliases if your team uses custom status names that the default regexes don't match.",
+        "aliases": {
+          "push_review":   [],
+          "after_approve": [],
+          "start":         [],
+          "done":          [],
+          "block":         [],
+          "unblock":       []
+        },
+        "ignoreStatuses": []
+      },
+
+      "chat": {
+        "_comment":   "Optional per-project bot override. Uncomment and point tokenEnv at a different variable in secrets.env to get a dedicated bot for this project (e.g. for per-project mute/notification-sound).",
+        "_chatId":    "",
+        "_tokenEnv":  "TELEGRAM_BOT_TOKEN_MAIN"
+      },
+
+      "agent": {
+        "_comment": "Optional per-project model override. Falls back to root agent.model / agent.perPhase.",
+        "_model":   "claude-opus-4-7-high"
+      },
+
+      "repositories": {
+        "_comment": "Each key is a short slug used in logs/cards (e.g. 'ssr'). localPath is the absolute path of your local git clone. defaultBranch is the integration branch. gitlabProject is <group>/<repo>.",
+        "ssr": {
+          "name":          "Main App",
+          "localPath":     "/Users/you/work/main-app",
+          "defaultBranch": "stage",
+          "gitlabProject": "your-group/main-app"
+        },
+        "blog": {
+          "name":          "Blog",
+          "localPath":     "/Users/you/work/blog",
+          "defaultBranch": "staging",
+          "gitlabProject": "your-group/blog"
+        }
+      },
+
+      "reviewers": [
+        {
+          "name":           "Reviewer One",
+          "jiraAccountId":  "",
+          "slackUserId":    "",
+          "email":          "reviewer.one@example.com",
+          "gitlabUsername": "reviewer.one",
+          "title":          "Frontend Developer",
+          "domains":        ["frontend", "ui"]
+        }
+      ],
+
+      "routing": {
+        "_comment":       "OPTIONAL. Declarative rules the executor consults BEFORE its built-in heuristic to pick a target repo (and optional reviewer). Rules are evaluated top-to-bottom; first match wins. A rule matches if ANY of its 'when' keywords appear (case-insensitive) in the ticket title/body/labels. Leave this block out to fall back to the built-in 'ask me on Telegram' behaviour.",
+        "defaultRepo":    "ssr",
+        "askOnAmbiguity": true,
+        "rules": [
+          {
+            "name": "blog-content",
+            "when": ["article", "author", "category", "markdown", "nuxt-studio", "@nuxt/content"],
+            "then": { "repo": "blog" }
+          },
+          {
+            "name": "backend-and-infra",
+            "when": ["backend", "api", "database", "docker-compose", "gitlab-ci", "infrastructure", "load balancer"],
+            "then": { "repo": "ssr", "reviewer": "reviewer.one" }
+          }
+        ]
+      },
+
+      "conventions": {
+        "_comment":       "branchFormat uses {type}, {ticketPrefix}, {ticketKey}, {user}, {short-description}. branchUser is your git slug.",
+        "branchUser":     "you",
+        "branchFormat":   "{type}/{ticketPrefix}/{ticketKey}/{user}/{short-description}",
+        "commitFormat":   "{type}({ticketKey}): {description}",
+        "mrTitleFormat":  "{ticketKey}: {description}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/autonomous-dev-agent/config.schema.json",
+  "title": "autonomous-dev-agent config.json",
+  "description": "Reference schema for the v0.3 config.json. The runtime linter is scripts/lib/_cfg_lint.py (no jsonschema dep). Keep both in sync.",
+  "type": "object",
+  "required": ["projects"],
+  "properties": {
+    "defaultProject": { "type": "string" },
+    "owner": {
+      "type": "object",
+      "properties": {
+        "name":    { "type": "string" },
+        "email":   { "type": "string", "format": "email" },
+        "handle":  { "type": "string" }
+      }
+    },
+    "time": {
+      "type": "object",
+      "properties": {
+        "timezone":    { "type": "string" },
+        "start":       { "type": "string", "pattern": "^[0-9]{2}:[0-9]{2}$" },
+        "end":         { "type": "string", "pattern": "^[0-9]{2}:[0-9]{2}$" },
+        "quietHours":  { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "model":    { "type": "string" },
+        "perPhase": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "chat": {
+      "type": "object",
+      "properties": {
+        "kind":      { "enum": ["telegram", "slack"] },
+        "tokenEnv":  { "type": "string" },
+        "chatId":    { "type": ["string", "number"] }
+      }
+    },
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id":   { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$" },
+          "name": { "type": "string" },
+          "tracker": {
+            "type": "object",
+            "properties": {
+              "kind":    { "enum": ["jira-cloud", "jira-server", "github-issues"] },
+              "siteUrl": { "type": "string", "format": "uri" },
+              "project": { "type": "string" }
+            }
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "kind":     { "enum": ["gitlab", "github", "bitbucket"] },
+              "groupUrl": { "type": "string" },
+              "branch":   {
+                "type": "object",
+                "properties": {
+                  "prefix":  { "type": "string" },
+                  "default": { "type": "string" }
+                }
+              }
+            }
+          },
+          "repositories": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "chat": {
+            "type": "object",
+            "properties": {
+              "kind":     { "enum": ["telegram", "slack"] },
+              "tokenEnv": { "type": "string" },
+              "chatId":   { "type": ["string", "number"] }
+            }
+          },
+          "workflow": {
+            "type": "object",
+            "properties": {
+              "aliases": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "propertyNames": {
+                  "enum": ["start", "push_review", "after_approve", "done", "block", "unblock"]
+                }
+              }
+            }
+          },
+          "agent": {
+            "type": "object",
+            "properties": {
+              "model":    { "type": "string" },
+              "perPhase": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              }
+            }
+          },
+          "conventions": {
+            "type": "object",
+            "properties": {
+              "commitFormat": { "type": "string" },
+              "ticketPrefix": { "type": "string" }
+            }
+          },
+          "reviewers": {
+            "type": "array",
+            "items": { "type": ["string", "number"] }
+          }
+        }
+      }
+    }
+  }
+}

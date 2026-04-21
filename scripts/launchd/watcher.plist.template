@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LAUNCHD_LABEL_PREFIX}}.dev-agent-watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{{SKILL_DIR}}/scripts/watcher.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>{{SKILL_DIR}}</string>
+    <key>StandardOutPath</key>
+    <string>{{SKILL_DIR}}/logs/watcher.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{SKILL_DIR}}/logs/watcher-error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:{{HOME}}/.local/bin</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
