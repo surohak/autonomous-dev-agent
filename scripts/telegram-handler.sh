@@ -932,7 +932,7 @@ for slug, meta in repos.items():
             ln = line.strip()
             if not ln.startswith("!"):
                 continue
-            # crude parse: !1234  PROJ-832: promote to main (1 commits)  (promote/PROJ-832/to-main-... -> main)
+            # crude parse: !2046  UA-832: promote to main (1 commits)  (promote/UA-832/to-main-... -> main)
             iid_part, _, rest = ln.partition(" ")
             try:
                 iid = int(iid_part.lstrip("!"))
@@ -1937,7 +1937,7 @@ $SEND_RESULT"
       # Resolve repo → GitLab project path and reviewer → display/jira IDs
       # from the live config.json. Keeping this in one Python pass means the
       # handler reads the file exactly once and never trusts stale env vars.
-      read -r GITLAB_PROJECT REVIEWER_NAME REVIEWER_JIRA_ID < <(
+      read -r GITLAB_PROJECT REVIEWER_NAME REVIEWER_JIRA_ID REVIEWER_SLACK_ID < <(
         CONFIG_FILE="${CONFIG_FILE:-$SKILL_DIR/config.json}" \
         REPO_ID="$REPO_ID" USERNAME="$USERNAME" python3 <<'PY'
 import json, os
@@ -1955,12 +1955,14 @@ if not gp and len(repos) == 1:
     gp = list(repos.values())[0].get("gitlabProject") or ""
 name = ""
 jid  = ""
+sid  = ""
 for r in (proj.get("reviewers") or []):
     if r.get("gitlabUsername") == os.environ["USERNAME"]:
         name = r.get("name") or ""
         jid  = r.get("jiraAccountId") or ""
+        sid  = r.get("slackUserId") or ""
         break
-print(gp or "-", name or "-", jid or "-")
+print(gp or "-", name or "-", jid or "-", sid or "-")
 PY
       )
 
@@ -2006,6 +2008,23 @@ $WARN_LINES"
         [[ -n "$WARN_LINES" ]] && MSG="$MSG
 $WARN_LINES"
         send_telegram "$MSG"
+      fi
+
+      # 3) Slack DM to the reviewer so they know a review is waiting.
+      if [[ -n "$REVIEWER_SLACK_ID" && "$REVIEWER_SLACK_ID" != "-" ]]; then
+        MR_LINK="https://gitlab.com/${GITLAB_PROJECT}/-/merge_requests/${MR_IID}"
+        JIRA_LINK="${JIRA_SITE:-}/browse/${TICKET}"
+        FIRST_NAME="${DISPLAY_NAME%% *}"
+        DM_MSG="Hi ${FIRST_NAME}, can you please review?
+MR: ${MR_LINK}
+Ticket: ${JIRA_LINK}"
+        if DM_OUT=$(python3 "$SKILL_DIR/scripts/send-slack-dm.py" \
+             --channel "$REVIEWER_SLACK_ID" --message "$DM_MSG" 2>&1); then
+          echo "[mr_assign] Slack DM sent to $DISPLAY_NAME ($REVIEWER_SLACK_ID)"
+        else
+          _warn "Slack DM to $DISPLAY_NAME failed: $(printf '%s' "$DM_OUT" | head -1)"
+          send_telegram "WARN: Slack DM to $DISPLAY_NAME failed — $(printf '%s' "$DM_OUT" | head -1)"
+        fi
       fi
       ;;
 
@@ -2460,7 +2479,7 @@ PYE
         # the full diagnostic message, then emit a fallback card with a
         # per-ticket "Cherry-pick <KEY>" button for each ticket that still
         # has un-applied commits. cherry-pick-combined.py embeds the list
-        # as `FALLBACK_KEYS=PROJ-942,PROJ-843` on its last line — we parse that
+        # as `FALLBACK_KEYS=UA-942,UA-843` on its last line — we parse that
         # here (falls back to the original CA_KEYS if the marker is absent).
         send_telegram "Combined cherry-pick failed:
 $CA_RESULT"
@@ -2783,7 +2802,7 @@ PY
     # --- Tempo callback taps ----------------------------------------------
     # These are produced by _tempo_card_kb in handlers/tempo.sh. The Python
     # parser (see MULTI_SPLIT_PREFIXES above) turns colon-separated
-    # callback_data like "tm_log:PROJ-997:2026-04-15:5400" into the
+    # callback_data like "tm_log:UA-997:2026-04-15:5400" into the
     # space-separated CMD string we match here. CB_MSG_ID lets handlers
     # edit the original card in place (e.g. swap [Log] → [Undo]).
     tm_log\ *)
