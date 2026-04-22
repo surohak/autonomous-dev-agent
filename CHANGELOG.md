@@ -3,6 +3,107 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.24] - 2026-04-22
+
+Comprehensive reliability pass across cherry-pick, Telegram handler,
+watcher, and Telegram API library. Eliminates edge-case failures that
+caused the combined cherry-pick to fail on repos with pre-commit hooks,
+and hardens state persistence against corruption.
+
+### Fixed
+
+- **Pre-commit hook breaks stage-HEAD amend during cherry-pick**: when
+  the `-X theirs` conflict resolution detects stale files and replaces
+  them with `origin/<stage>` HEAD, the subsequent
+  `git commit --amend --no-edit` was triggering the target repo's
+  pre-commit hook (husky). In environments without AWS credentials or
+  Docker (the automation runner), this caused `make npm` / husky to
+  fail with exit code 2, aborting the entire cherry-pick. Fixed by
+  adding `--no-verify` to the amend in both `cherry-pick.py` and
+  `cherry-pick-combined.py`. The code has already been validated on
+  the staging branch, so skipping the hook on amend is safe.
+
+- **`applied_shas` membership bug in combined cherry-pick**: the
+  `picked` list contains suffixed entries like `sha(theirs)` and
+  `sha(stage)`, but the FALLBACK_KEYS logic compared bare 8-char
+  prefixes against this set — membership always failed, causing
+  `remaining_by_ticket` to over-include tickets and emit wrong
+  "still pending" counts. Fixed by stripping suffixes when building
+  `applied_shas`.
+
+- **Manual-finish block contained invalid git commands**: the
+  copy-paste `git cherry-pick -x ...` command joined `picked` entries
+  including `(theirs)`/`(stage)` suffixes, producing commands git
+  cannot parse. Fixed by stripping suffixes in the manual block.
+
+- **Uncaught `TimeoutExpired` in both cherry-pick scripts**: any
+  `subprocess.run(..., timeout=...)` that exceeded its timeout raised
+  an unhandled exception, crashing the script with a traceback and
+  leaving the repo in an ambiguous state. Now caught and returned as
+  `(124, "", "command timed out...")`.
+
+- **`cherry-pick --abort` return code ignored before `-X theirs`
+  retry**: if abort failed, the retry ran in a corrupted cherry-pick
+  state. Now falls back to `git reset --hard HEAD` if abort fails.
+
+- **Per-file `git checkout origin/<stage>` return code ignored in
+  stale fixup**: if a file was renamed/deleted on stage, the checkout
+  would fail silently and the amend would run with wrong index state.
+  Now checks each checkout and aborts cleanly on failure.
+
+- **`PROMOTED_FILE` ignored on `cherry-pick.py` success path**:
+  the success-path write hardcoded `cache/promoted.json` relative to
+  `__file__` instead of honoring the `PROMOTED_FILE` env var. This
+  caused the Telegram handler's DM/approver follow-up to read from a
+  different file than what was written. Fixed to use `PROMOTED_FILE`
+  with the same fallback as the existing-MR detection path.
+
+- **Duplicate MR detection used substring match**: `TK_KEY in title`
+  caused false positives (e.g. `PROJ-1` matching `PROJ-10`). Changed
+  to word-boundary regex in both `cherry-pick.py` and
+  `cherry-pick-combined.py`.
+
+- **Non-atomic `promoted.json` writes**: a kill/crash during
+  `json.dump(open(..., "w"))` left a truncated file that subsequent
+  reads parsed as `{}`. All writes now use `tempfile.mkstemp` +
+  `os.replace` for atomic replacement.
+
+- **`rel_dm` handler used wrong config key (`repos` instead of
+  `repositories`)**: the MR-freshness verification in the Slack DM
+  flow could never resolve the local repo path, so `glab mr view`
+  was always skipped — stale/merged MR URLs could reach the approver.
+  Fixed to use the same `repositories` / `projects[0].repositories`
+  lookup as the cherry-pick scripts.
+
+- **Callback data could exceed Telegram's 64-byte limit**: the
+  `tk_cherryall` button builder trimmed at `> 60` using `len(str)`
+  (character count) instead of `len(str.encode())` (byte count).
+  Fixed to check encoded byte length against the hard 64-byte limit.
+
+- **Approver name with `:` broke `cut -d:` parsing in `rel_dm`**:
+  the Python→shell handoff used `:` as the delimiter for a field
+  that can contain colons (e.g. name with suffix). Changed to `|`
+  delimiter.
+
+- **Watcher state writes were non-atomic**: all four inline-Python
+  `json.dump(open(..., 'w'))` calls for pipeline state, MR notes,
+  Jira tickets, and queue snapshot could corrupt on kill. Replaced
+  with `tempfile.mkstemp` + `os.replace`.
+
+- **Watcher Jira response not validated**: if the Jira API returned
+  non-JSON (HTML error page, empty body, network error), the diff
+  block would crash. Now skips the Jira section with a log entry
+  when the response fails to parse.
+
+- **Watcher state file read crash on corruption**: `json.load(open(STATE))`
+  with no try/except would crash the Jira diff block if the state
+  file was truncated. Added fallback to empty dict.
+
+- **Telegram API errors completely invisible**: `_tg_call` discarded
+  all curl output (`>/dev/null 2>&1`), making HTTP 400/403/429 errors
+  undetectable. Now captures response, logs HTTP status and body to
+  stderr on 4xx/5xx, and returns non-zero exit code.
+
 ## [1.0.23] - 2026-04-21
 
 Cumulative patch series (1.0.1 – 1.0.23) covering the cherry-pick

@@ -9,7 +9,7 @@ Env: TK_KEY, CONFIG_PATH, [FORCE_REPO=ssr|blog].
 Exit: 0 OK, 1 error, 2 nothing to pick (all already in main).
 Prints a line starting with 'OK:' / 'INFO:' / 'ERR:' for the handler to route.
 """
-import os, json, subprocess, urllib.parse, re, sys, time
+import os, json, subprocess, urllib.parse, re, sys, tempfile, time
 
 TK_KEY = os.environ["TK_KEY"].upper().strip()
 config = json.load(open(os.environ["CONFIG_PATH"]))
@@ -21,8 +21,11 @@ force_repo = os.environ.get("FORCE_REPO", "").strip()
 
 
 def run(cmd, cwd=None, timeout=120):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout.strip(), r.stderr.strip()
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", f"command timed out after {timeout}s: {' '.join(str(c) for c in cmd[:4])}"
 
 
 def find_ticket_commits(slug, meta):
@@ -154,7 +157,7 @@ _match = None
 for _m in _existing:
     _title = _m.get("title", "") or ""
     _src = _m.get("source_branch", "") or ""
-    if (_m.get("target_branch") or "main") == "main" and (TK_KEY in _title or TK_KEY in _src):
+    if (_m.get("target_branch") or "main") == "main" and re.search(r'\b' + re.escape(TK_KEY) + r'\b', _title + " " + _src):
         _match = _m
         break
 if _match:
@@ -178,7 +181,19 @@ if _match:
             "ts": int(time.time()),
             "source": "existing-mr-detected-by-cherry",
         }
-        json.dump(promoted, open(promoted_path, "w"))
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(promoted_path), suffix=".tmp",
+        )
+        try:
+            with os.fdopen(tmp_fd, "w") as tmp_f:
+                json.dump(promoted, tmp_f)
+            os.replace(tmp_path, promoted_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception:
         pass
     print(f"INFO: {TK_KEY} already has an open promote MR to main: !{_match.get('iid')} → {_url}")
@@ -276,7 +291,9 @@ for sha in shas:
         snapshot_unmerged = list(unmerged_paths)
         snapshot_staged = list(staged_paths)
 
-        run(["git", "cherry-pick", "--abort"], cwd=local, timeout=60)
+        rc_abort, _, _ = run(["git", "cherry-pick", "--abort"], cwd=local, timeout=60)
+        if rc_abort != 0:
+            run(["git", "reset", "--hard", "HEAD"], cwd=local, timeout=60)
 
         theirs_cmd = ["git", "cherry-pick", "-x", "-X", "theirs"]
         if parent_count >= 2:
@@ -323,12 +340,32 @@ for sha in shas:
                 f"with origin/{stage} HEAD and amending.",
                 file=sys.stderr,
             )
+            checkout_ok = True
             for sf in stale_files:
-                run(["git", "checkout", f"origin/{stage}", "--", sf],
-                    cwd=local, timeout=30)
+                rc_co, _, err_co = run(
+                    ["git", "checkout", f"origin/{stage}", "--", sf],
+                    cwd=local, timeout=30,
+                )
+                if rc_co != 0:
+                    print(
+                        f"[cherry-pick] {sha[:8]}: checkout origin/{stage} "
+                        f"-- {sf} failed: {err_co[:100]}",
+                        file=sys.stderr,
+                    )
+                    checkout_ok = False
+            if not checkout_ok:
+                run(["git", "reset", "--hard", "HEAD~1"], cwd=local, timeout=60)
+                conflicts.append({
+                    "sha": sha[:8],
+                    "detail": "Stage HEAD checkout failed for one or more stale files",
+                    "unmerged": snapshot_unmerged,
+                    "staged": snapshot_staged,
+                    "stale_vs_stage": stale_files,
+                })
+                break
             run(["git", "add"] + stale_files, cwd=local, timeout=30)
             rc_amend, _, err_amend = run(
-                ["git", "commit", "--amend", "--no-edit"],
+                ["git", "commit", "--amend", "--no-edit", "--no-verify"],
                 cwd=local, timeout=60,
             )
             if rc_amend != 0:
@@ -420,6 +457,8 @@ if not picked:
 # --- 5) push + open MR ---
 rc, _, err = run(["git", "push", "-u", "origin", new_branch], cwd=local, timeout=180)
 if rc != 0:
+    run(["git", "checkout", current_branch or "-"], cwd=local)
+    run(["git", "branch", "-D", new_branch], cwd=local)
     print(f"ERR: push failed: {err[:400]}")
     sys.exit(1)
 
@@ -461,9 +500,11 @@ url = m.group(0) if m else ""
 
 # Persist the promoted-MR info so the Telegram handler can build the DM button.
 try:
-    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    promoted_path = os.path.join(cache_dir, "promoted.json")
+    promoted_path = os.environ.get("PROMOTED_FILE") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "cache", "promoted.json",
+    )
+    os.makedirs(os.path.dirname(promoted_path), exist_ok=True)
     try:
         promoted = json.load(open(promoted_path))
     except Exception:
@@ -478,7 +519,19 @@ try:
         "auto_resolved": auto_resolved,
         "ts": int(time.time()),
     }
-    json.dump(promoted, open(promoted_path, "w"))
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(promoted_path), suffix=".tmp",
+    )
+    try:
+        with os.fdopen(tmp_fd, "w") as tmp_f:
+            json.dump(promoted, tmp_f)
+        os.replace(tmp_path, promoted_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 except Exception:
     pass
 

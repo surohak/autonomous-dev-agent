@@ -1087,8 +1087,7 @@ if d.get("__combined__"):
     summaries = d.get("summaries", {}) or {}
     # Callback data has a hard 64-byte limit. Drop ticket keys if we exceed.
     joined = ",".join(keys)
-    # Reserve 22 bytes for 'tk_cherryall:' + repo + ':' + safety margin
-    while len(f"tk_cherryall:{repo}:{joined}") > 60 and len(keys) > 2:
+    while len(f"tk_cherryall:{repo}:{joined}".encode()) > 64 and len(keys) > 2:
         keys = keys[:-1]
         joined = ",".join(keys)
     lines = [f"Cherry-pick all {len(d.get('keys',[]))} tickets to main ({repo}):"]
@@ -2653,7 +2652,8 @@ if mr_url:
     iid_match = re.search(r'/merge_requests/(\d+)', mr_url)
     if iid_match:
         local = info.get("repo") or ""
-        repos = config.get("repos") or {}
+        _proj0 = (config.get("projects") or [{}])[0] if isinstance(config.get("projects"), list) else {}
+        repos = config.get("repositories") or _proj0.get("repositories") or {}
         repo_local = (repos.get(local) or {}).get("localPath") or ""
         if repo_local and os.path.isdir(repo_local):
             try:
@@ -2708,13 +2708,13 @@ task = {
     "queued_at": int(time.time()),
 }
 json.dump(task, open(task_path, "w"), indent=2)
-print(f"OK:{tk_key}:{appr['name']}:{task_path}")
+print(f"OK:{tk_key}|{appr['name']}|{task_path}")
 PYE
       )
       if [[ "$RESULT" == ERR:* ]]; then
         send_telegram "$RESULT"
       elif [[ "$RESULT" == OK:* ]]; then
-        APPR_NAME=$(echo "$RESULT" | cut -d: -f3)
+        APPR_NAME=$(echo "$RESULT" | cut -d'|' -f2)
         send_telegram "Sending DM to $APPR_NAME for $TK_KEY via Cursor's Slack token…"
         # Call Slack directly using the OAuth token from Cursor IDE's state.vscdb.
         # The helper script also posts a Telegram confirmation on success / failure.

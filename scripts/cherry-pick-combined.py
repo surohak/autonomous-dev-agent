@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 
@@ -66,8 +67,11 @@ if not local or not os.path.isdir(local):
 
 
 def run(cmd, cwd=None, timeout=180):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout.strip(), r.stderr.strip()
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", f"command timed out after {timeout}s: {' '.join(str(c) for c in cmd[:4])}"
 
 
 # --- 1) fetch + sanity checks --------------------------------------------
@@ -165,8 +169,7 @@ for m in existing:
     title = (m.get("title") or "")
     if not src.startswith("promote/combined/"):
         continue
-    # Match if EVERY key in KEYS appears in title or source_branch
-    if all(k in title or k in src for k in KEYS):
+    if all(re.search(r'\b' + re.escape(k) + r'\b', title + " " + src) for k in KEYS):
         existing_match = m
         break
 
@@ -283,7 +286,9 @@ for sha in shas_ordered:
         # commits (under other tickets) that touched the same file — the
         # `theirs` strategy short-circuits that by directly importing
         # stage's current content for the file.
-        run(["git", "cherry-pick", "--abort"], cwd=local, timeout=60)
+        rc_abort, _, _ = run(["git", "cherry-pick", "--abort"], cwd=local, timeout=60)
+        if rc_abort != 0:
+            run(["git", "reset", "--hard", "HEAD"], cwd=local, timeout=60)
 
         theirs_cmd = ["git", "cherry-pick", "-x", "-X", "theirs"]
         if parent_count >= 2:
@@ -351,12 +356,32 @@ for sha in shas_ordered:
                 f"HEAD and amending.",
                 file=sys.stderr,
             )
+            checkout_ok = True
             for sf in stale_files:
-                run(["git", "checkout", f"origin/{stage}", "--", sf],
-                    cwd=local, timeout=30)
+                rc_co, _, err_co = run(
+                    ["git", "checkout", f"origin/{stage}", "--", sf],
+                    cwd=local, timeout=30,
+                )
+                if rc_co != 0:
+                    print(
+                        f"[cherry-pick-combined] {sha[:8]}: checkout "
+                        f"origin/{stage} -- {sf} failed: {err_co[:100]}",
+                        file=sys.stderr,
+                    )
+                    checkout_ok = False
+            if not checkout_ok:
+                run(["git", "reset", "--hard", "HEAD~1"], cwd=local, timeout=60)
+                conflicts.append({
+                    "sha": sha[:8],
+                    "detail": f"Stage HEAD checkout failed for one or more stale files",
+                    "unmerged": snapshot_unmerged,
+                    "staged": snapshot_staged,
+                    "stale_vs_stage": stale_files,
+                })
+                break
             run(["git", "add"] + stale_files, cwd=local, timeout=30)
             rc_amend, _, err_amend = run(
-                ["git", "commit", "--amend", "--no-edit"],
+                ["git", "commit", "--amend", "--no-edit", "--no-verify"],
                 cwd=local, timeout=60,
             )
             if rc_amend != 0:
@@ -438,7 +463,7 @@ if conflicts:
 
     # Which tickets in KEYS have at least one commit still un-applied? Those
     # are the ones worth retrying individually.
-    applied_shas = set(picked)
+    applied_shas = {s.split("(")[0] for s in picked}
     remaining_by_ticket: dict[str, int] = {}
     seen_conflict = False
     for _ci, _sha, _sub, _k in unique:
@@ -465,11 +490,12 @@ if conflicts:
     # prefers to finish by hand instead of splitting into per-ticket MRs,
     # these exact commands reproduce the combined branch up to the point
     # of conflict and drop them at the editor.
+    clean_picked = [s.split("(")[0] for s in picked]
     manual_block = (
         "\nManual finish (copy/paste):\n"
         f"  cd {local}\n"
         f"  git checkout -B {new_branch} origin/main\n"
-        + (f"  git cherry-pick -x {' '.join(picked)}\n" if picked else "")
+        + (f"  git cherry-pick -x {' '.join(clean_picked)}\n" if clean_picked else "")
         + f"  git cherry-pick -x {conflict_sha_short}   # resolve conflicts in: {file_list or '(see git status)'}\n"
         "  git add <resolved> && git cherry-pick --continue\n"
         "  git push -u origin HEAD && glab mr create --target-branch main\n"
@@ -598,7 +624,19 @@ try:
     # Mirror under each individual ticket key so rel_dm:<any> resolves
     for k in KEYS:
         promoted[k] = dict(shared_entry)
-    json.dump(promoted, open(promoted_path, "w"))
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(promoted_path), suffix=".tmp",
+    )
+    try:
+        with os.fdopen(tmp_fd, "w") as tmp_f:
+            json.dump(promoted, tmp_f)
+        os.replace(tmp_path, promoted_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 except Exception as e:
     # Non-fatal: MR is created. Just warn.
     print(f"WARN: promoted.json persistence failed: {e}", file=sys.stderr)

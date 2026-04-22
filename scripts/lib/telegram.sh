@@ -26,10 +26,22 @@ _DEV_AGENT_TG_LOADED=1
 _tg_call() {
   local method="$1"
   [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && { echo "tg: TELEGRAM_BOT_TOKEN unset" >&2; return 1; }
-  curl -s --max-time 15 -X POST \
+  local _resp _rc
+  _resp=$(curl -s --max-time 15 -w "\n%{http_code}" -X POST \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}" \
     -H "Content-Type: application/json" \
-    --data-binary @- > /dev/null 2>&1
+    --data-binary @- 2>&1)
+  _rc=$?
+  local _http_code="${_resp##*$'\n'}"
+  if [[ $_rc -ne 0 ]]; then
+    echo "tg: curl failed (rc=$_rc) for $method" >&2
+    return 1
+  fi
+  if [[ "$_http_code" =~ ^[45] ]]; then
+    echo "tg: $method HTTP $_http_code: ${_resp%$'\n'*}" >&2
+    return 1
+  fi
+  return 0
 }
 
 # --- private: build + post {"chat_id","text",...} via Python JSON encoding --

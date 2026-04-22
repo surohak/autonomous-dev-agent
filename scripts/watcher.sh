@@ -269,14 +269,17 @@ print(json.dumps(kb))
     # Save state only on success, so a failed notify is retried next tick.
     if [ "$NOTIFY_FAILED" = "0" ]; then
       python3 -c "
-import json
-s = json.load(open('$STATE_FILE'))
+import json, tempfile, os
+sf = '$STATE_FILE'
+s = json.load(open(sf))
 s.setdefault('pipelines', {})['${REPO_NAME}-${MR_IID}'] = {
     'last_pipeline_id': '$PIPE_ID',
     'last_status': '$PIPE_STATUS',
     'updated_at': __import__('datetime').datetime.utcnow().isoformat()+'Z'
 }
-json.dump(s, open('$STATE_FILE','w'), indent=2)
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
 "
     fi
   done
@@ -375,13 +378,16 @@ notes = json.load(sys.stdin) or []
 print(max([n.get('id',0) for n in notes] or [0]))
 ")
       python3 -c "
-import json
-s = json.load(open('$STATE_FILE'))
+import json, tempfile, os
+sf = '$STATE_FILE'
+s = json.load(open(sf))
 s.setdefault('mr_notes', {})['${REPO_NAME}-${MR_IID}'] = {
     'last_note_id': int('$LATEST_NOTE_ID' or 0),
     'updated_at': __import__('datetime').datetime.utcnow().isoformat()+'Z'
 }
-json.dump(s, open('$STATE_FILE','w'), indent=2)
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
 "
     fi
   done
@@ -404,12 +410,20 @@ except: print('parse-fail')
 ")
 echo "  [jira] actionable tickets: $JIRA_COUNT" >> "$LOG_FILE"
 
+if [ "$JIRA_COUNT" = "parse-fail" ]; then
+  echo "  [jira] SKIP: Jira response is not valid JSON" >> "$LOG_FILE"
+  continue
+fi
+
 # Diff against last snapshot
 RESULT=$(JIRA="$JIRA" STATE="$STATE_FILE" python3 <<'PY'
 import os, json, datetime
 
 jira = json.loads(os.environ["JIRA"] or '{"issues":[]}')
-state = json.load(open(os.environ["STATE"]))
+try:
+    state = json.load(open(os.environ["STATE"]))
+except (json.JSONDecodeError, FileNotFoundError):
+    state = {}
 tickets_state = state.get("jira_tickets", {})
 old_keys = set(tickets_state.get("assigned", {}).keys())
 old_status = tickets_state.get("assigned", {})
@@ -433,7 +447,11 @@ for issue in jira.get("issues", []):
 
 state.setdefault("jira_tickets", {})["assigned"] = new_state
 state["jira_tickets"]["updated_at"] = datetime.datetime.utcnow().isoformat()+"Z"
-json.dump(state, open(os.environ["STATE"], 'w'), indent=2)
+import tempfile as _tf
+_sf = os.environ["STATE"]
+_fd, _tp = _tf.mkstemp(dir=os.path.dirname(_sf), suffix='.tmp')
+with os.fdopen(_fd, 'w') as _f: json.dump(state, _f, indent=2)
+os.replace(_tp, _sf)
 
 print(json.dumps({"new": new_assignments, "changes": status_changes}))
 PY
@@ -473,7 +491,10 @@ for issue in jira.get("issues", []):
 
 data[pid] = {"todo": todo, "updated_at": int(time.time())}
 data["_updated"] = int(time.time())
-json.dump(data, open(snap_path, "w"), indent=2)
+import tempfile as _tf
+_fd, _tp = _tf.mkstemp(dir=os.path.dirname(snap_path), suffix='.tmp')
+with os.fdopen(_fd, 'w') as _f: json.dump(data, _f, indent=2)
+os.replace(_tp, snap_path)
 PY
 
 echo "$RESULT" | python3 -c "
