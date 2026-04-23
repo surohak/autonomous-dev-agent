@@ -23,6 +23,7 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands
       {"command": "cherries", "description": "List tickets eligible for cherry-pick to main"},
       {"command": "cherry", "description": "Promote ticket to main (/cherry PROJ-XXX)"},
       {"command": "run", "description": "Trigger agent run"},
+      {"command": "tempo", "description": "Tempo worklog suggestions"},
       {"command": "watch", "description": "Show watcher status"},
       {"command": "snooze", "description": "Mute watcher (e.g. /snooze 1h)"},
       {"command": "unsnooze", "description": "Resume watcher notifications"},
