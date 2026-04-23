@@ -88,11 +88,20 @@ for pid, r in sorted(d.items(), key=lambda kv: kv[1].get('started_at', 0)):
     return 0
   fi
 
-  local latest_log last_run last_result
+  local latest_log last_run last_result last_exit
   latest_log=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | grep -Ev 'telegram-handler|launchd-|watcher' | head -1)
   if [ -n "$latest_log" ]; then
     last_run=$(head -1 "$latest_log" | sed 's/=== Autonomous Dev Agent Run: //' | sed 's/ ===//')
-    last_result=$(tail -1 "$latest_log" | head -c 200)
+    last_exit=$(grep -o 'exit code: [0-9]*' "$latest_log" | tail -1 | grep -o '[0-9]*')
+    if [ -n "$last_exit" ]; then
+      if [ "$last_exit" = "0" ]; then
+        last_result="Success (exit 0)"
+      else
+        last_result="Failed (exit $last_exit)"
+      fi
+    else
+      last_result=$(tail -1 "$latest_log" | head -c 120)
+    fi
   else
     last_run="No runs yet"
     last_result="N/A"
