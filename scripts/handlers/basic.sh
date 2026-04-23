@@ -113,6 +113,132 @@ Last run: $last_run
 Result: $last_result"
 }
 
+# ----- /slack ----------------------------------------------------------------
+cmd_slack() {
+  local filter="${1:-all}"
+  local state_file="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+
+  if [ ! -f "$state_file" ]; then
+    tg_send "No Slack reports yet. Configure slack.monitor.channels in config.json to start monitoring."
+    return 0
+  fi
+
+  local output
+  output=$(FILTER="$filter" python3 -c "
+import json, os, time
+
+sf = os.environ.get('STATE_FILE', '')
+filt = os.environ.get('FILTER', 'all')
+
+try:
+    state = json.load(open(sf))
+except Exception:
+    print('ERR:cannot read state')
+    exit()
+
+seen = state.get('seen', {})
+if not seen:
+    print('EMPTY')
+    exit()
+
+now = int(time.time())
+
+def age_str(ts):
+    s = max(0, now - int(ts))
+    if s < 3600: return f'{s//60}m ago'
+    if s < 86400: return f'{s//3600}h ago'
+    return f'{s//86400}d ago'
+
+groups = {'notified': [], 'fixing': [], 'fixed': [], 'asking': [], 'ignored': []}
+for key, v in seen.items():
+    if not isinstance(v, dict): continue
+    status = v.get('status', 'notified')
+    if filt == 'pending' and status != 'notified': continue
+    if filt == 'fixed' and status != 'fixed': continue
+    if filt == 'all' and status == 'ignored': continue
+    groups.setdefault(status, []).append((key, v))
+
+for g in groups.values():
+    g.sort(key=lambda x: x[1].get('notified_at', 0), reverse=True)
+
+lines = []
+total = 0
+label_map = {'notified': 'Pending', 'fixing': 'Fixing', 'fixed': 'Fixed',
+             'asking': 'Awaiting reply', 'ignored': 'Ignored'}
+
+for status in ('notified', 'fixing', 'asking', 'fixed', 'ignored'):
+    items = groups.get(status, [])
+    if not items: continue
+    lines.append(f'\n{label_map.get(status, status)} ({len(items)}):')
+    for key, v in items[:5]:
+        name = v.get('user_name', '?')
+        preview = (v.get('preview', '') or '')[:80]
+        if len(v.get('preview', '')) > 80: preview += '...'
+        age = age_str(v.get('notified_at', now))
+        mr = v.get('mr_url', '')
+        extra = ''
+        if status == 'fixed' and mr:
+            mr_short = mr.split('/')[-1] if '/' in mr else mr
+            extra = f' [MR !{mr_short}]'
+        lines.append(f'  {name}: {preview} -- {age}{extra}')
+        total += 1
+    if len(items) > 5:
+        lines.append(f'  ... and {len(items)-5} more')
+
+if total == 0:
+    print('EMPTY')
+else:
+    header = 'Slack reports'
+    if filt == 'pending': header = 'Pending Slack reports'
+    elif filt == 'fixed': header = 'Fixed Slack reports'
+    print(f'CARDS:{header}:' + '\n'.join(lines))
+
+# Also output card data as separate lines for buttons
+for key, v in groups.get('notified', [])[:5]:
+    ch = v.get('channel', '')
+    dk = v.get('dedup_key', '')
+    name = v.get('user_name', '?')
+    preview = (v.get('preview', '') or '')[:40]
+    print(f'BTN:notified:{ch}:{dk}:{name}: {preview}')
+
+for key, v in groups.get('fixed', [])[:5]:
+    mr = v.get('mr_url', '')
+    name = v.get('user_name', '?')
+    preview = (v.get('preview', '') or '')[:40]
+    if mr:
+        print(f'BTN:fixed:{mr}:{name}: {preview}')
+" STATE_FILE="$state_file" 2>/dev/null)
+
+  if [ -z "$output" ] || [ "$output" = "EMPTY" ]; then
+    tg_send "No Slack reports to show. $([ "$filter" != "all" ] && echo "Try /slack for all.")"
+    return 0
+  fi
+
+  if [[ "$output" == ERR:* ]]; then
+    tg_send "Could not read Slack state: ${output#ERR:}"
+    return 0
+  fi
+
+  # Send the summary message
+  local summary
+  summary=$(echo "$output" | grep '^CARDS:' | head -1)
+  summary="${summary#CARDS:}"
+  local header="${summary%%:*}"
+  local body="${summary#*:}"
+  tg_send "$header
+$body"
+
+  # Send individual cards with buttons for pending items
+  echo "$output" | grep '^BTN:notified:' | head -5 | while IFS=: read -r _ _ ch dk rest; do
+    [ -z "$ch" ] || [ -z "$dk" ] && continue
+    local cb_fix="sl_fix:${ch}:${dk}"
+    local cb_ask="sl_ask:${ch}:${dk}"
+    local cb_ign="sl_ign:${ch}:${dk}"
+    local kb="[[{\"text\":\"Fix this\",\"callback_data\":\"$cb_fix\"},{\"text\":\"Ask Reporter\",\"callback_data\":\"$cb_ask\"}],[{\"text\":\"Ignore\",\"callback_data\":\"$cb_ign\"}]]"
+    tg_inline "$rest" "$kb"
+  done
+}
+
 # ----- /logs -----------------------------------------------------------------
 cmd_logs() {
   local latest

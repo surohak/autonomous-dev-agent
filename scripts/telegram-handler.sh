@@ -656,6 +656,8 @@ for m in data['messages']:
     -e 's/^tempo_today/tempo today/' \
     -e 's/^tempo_week/tempo week/' \
     -e 's/^status_all/status all/' \
+    -e 's/^slack_pending/slack pending/' \
+    -e 's/^slack_fixed/slack fixed/' \
     -e 's/^workflow_refresh/workflow refresh/' \
   )
 
@@ -663,6 +665,18 @@ for m in data['messages']:
 
     status)
       cmd_status
+      ;;
+
+    slack)
+      cmd_slack all
+      ;;
+
+    slack\ pending)
+      cmd_slack pending
+      ;;
+
+    slack\ fixed)
+      cmd_slack fixed
       ;;
 
     status\ all)

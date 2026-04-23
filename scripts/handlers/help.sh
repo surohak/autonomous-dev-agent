@@ -68,13 +68,16 @@ Tempo (worklog suggestions + summary)
 - Per-card: [Log <Xh Ym>] logs to Tempo · [Edit] prompts for a custom
   duration · [Skip] dismisses. After logging, [Undo] appears.
 
-Slack hotfix (auto — no command needed)
+Slack hotfix
 - Watcher monitors configured Slack channels for bug reports
 - New messages appear as cards: [Fix this] [Ask Reporter] [Reply only] [Ignore]
 - Fix this: reads thread + screenshots, spawns agent, opens MR to stage,
   replies in Slack with MR link
 - Ask Reporter: prompts you for a question, posts it in the Slack thread
 - Reply only: type a freeform reply to post in the thread
+- /slack — list recent Slack reports with action buttons
+- /slack pending — only unresolved reports
+- /slack fixed — only fixed reports (shows MR link)
 - Configure: slack.monitor.channels in config.json
 
 Review nudges

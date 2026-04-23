@@ -3,6 +3,17 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.32] - 2026-04-23
+
+### Added
+
+- **`/slack` Telegram command**: view recent Slack bug reports with status
+  grouping (Pending, Fixing, Awaiting reply, Fixed). Supports filters:
+  `/slack pending`, `/slack fixed`. Pending items include action buttons.
+- **Agent context discovery**: `phase-slack-hotfix.md` now instructs the
+  agent to proactively search Jira, git history, codebase, and open MRs
+  before resorting to `NEED_INFO:` when a Slack report is vague.
+
 ## [1.0.31] - 2026-04-23
 
 ### Fixed

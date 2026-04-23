@@ -14,9 +14,43 @@ may also be provided as file paths.
 
 1. Read and understand the reported issue from the Slack thread.
 2. If screenshots are provided, examine them to understand the visual bug.
-3. Identify which file(s) in the codebase need to change.
-4. Implement the fix.
-5. Open an MR targeting the staging branch.
+3. **Gather additional context** if the Slack message alone is not enough
+   (see "Context Discovery" below).
+4. Identify which file(s) in the codebase need to change.
+5. Implement the fix.
+6. Open an MR targeting the staging branch.
+
+### Context Discovery
+
+If the Slack message is vague, incomplete, or does not clearly point to a
+specific file or component, you MUST proactively search for context before
+giving up with NEED_INFO. Follow these steps in order:
+
+1. **Jira / ticket context** — If a ticket key is provided in SLACK_TICKET,
+   fetch its description, comments, and linked issues. Even without a key,
+   search Jira for keywords from the Slack message (component names, error
+   text, page names) to find related tickets with more detail.
+
+2. **Recent git history** — Run `git log --oneline -30 origin/stage` (or
+   `origin/staging` for blog) and scan for commits mentioning the same
+   component, page, or feature. Read the diffs of likely matches to
+   understand recent changes that may have introduced the bug.
+
+3. **Codebase search** — Use grep / ripgrep to search for keywords from the
+   Slack report (component names, CSS classes, error strings, page routes).
+   Narrow down to the affected file(s) and read them.
+
+4. **Open MRs** — Check `glab mr list --state opened` for any in-flight
+   changes to the same area that might be related or might conflict.
+
+5. **Screenshots** — If image files are provided, examine them closely.
+   Look for visible text, URLs in the browser bar, component structure, and
+   error messages that can guide your code search.
+
+Only resort to `NEED_INFO:` if, after all five steps, you still cannot
+determine what needs to change. In that case, be specific about what is
+missing (e.g., "Cannot identify which page — the screenshot shows no URL
+and the message mentions 'the form' without specifying which one").
 
 ### Repo Selection
 
