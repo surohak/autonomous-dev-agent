@@ -694,8 +694,16 @@ After ALL checks pass, commit:
     --reviewer "{reviewer}" \
     --target-branch "<target>"
 
-  Capture the MR URL from glab output — use this exact URL in all notifications.
-  NEVER construct GitLab MR URLs manually (the path is /-/merge_requests/, not /-/mergerequests/).
+  Capture the MR URL from glab output — use this EXACT URL in all notifications.
+
+  ⚠️ CRITICAL: NEVER construct GitLab MR URLs manually. The agent has repeatedly
+  gotten this wrong (e.g. "jobleadsapp" instead of "jobleads_app", "mergerequests"
+  instead of "merge_requests"). The ONLY safe source is the URL printed by
+  `glab mr create`. Parse it from the output with:
+    MR_URL=$(glab mr create ... 2>&1 | grep -oE 'https://[^ ]+merge_requests/[0-9]+')
+  If the URL is empty after parsing, fall back to:
+    glab mr view <iid> --web 2>/dev/null || glab mr list --search="<KEY>" --state=opened --output=json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['web_url'])"
+  NEVER type out a GitLab URL by hand.
 
   MR description format — THE RULE, NO EXCEPTIONS:
   - A plain bullet list summarising what changed. 3–6 bullets max. One line each.

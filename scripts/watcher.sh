@@ -1,9 +1,10 @@
 #!/bin/bash
 # Autonomous Dev Agent — Watcher
 # Cheap periodic polling (no tokens) for:
-#   1. CI pipeline status on user's open MRs          → [Auto-fix] [Open] [Snooze]
-#   2. New reviewer comments on user's open MRs       → [Auto-fix] [Open] [Seen]
-#   3. Newly assigned Jira tickets + status changes   → [Start now] [Later] [Skip]
+#   1a. CI pipeline status on user's open MRs         → [Auto-fix] [Open] [Snooze]
+#   1b. New reviewer comments on user's open MRs      → [Auto-fix] [Open] [Seen]
+#   1c. Approved MRs still in Code Review             → auto-transition to Ready For QA
+#   2.  Newly assigned Jira tickets + status changes  → [Start now] [Later] [Skip]
 #
 # Runs every 2 minutes via launchd. Stateless re-runs — state is in
 # cache/watcher-state.json. Respects watcher-snoozed.until for notification
@@ -391,6 +392,109 @@ os.replace(tp, sf)
 "
     fi
   done
+
+  # --- 1c. Approved MRs: auto-transition ticket to Ready For QA ------------
+  # If a reviewer approved an MR but forgot to move the Jira ticket,
+  # detect it here and handle it automatically.
+  echo "$MY_MR_LIST" | python3 -c "
+import sys, json
+for m in json.load(sys.stdin):
+    print(m.get('iid'))
+" 2>/dev/null | while read -r MR_IID; do
+    [ -z "$MR_IID" ] && continue
+
+    APPROVAL_JSON=$(cd "$REPO" && glab api "projects/:fullpath/merge_requests/$MR_IID/approvals" 2>/dev/null || echo "{}")
+
+    APPROVAL_INFO=$(echo "$APPROVAL_JSON" | python3 -c "
+import sys, json, re, os
+try:
+    ap = json.load(sys.stdin)
+except Exception:
+    print(''); exit()
+approved_by = [a.get('user',{}).get('username','?') for a in (ap.get('approved_by') or [])]
+left = ap.get('approvals_left')
+is_approved = (ap.get('approved') is True
+               or (isinstance(left, int) and left == 0)
+               or (approved_by and left is None))
+if not is_approved or not approved_by:
+    print('')
+    exit()
+print(f\"{','.join(approved_by)}\")
+" 2>/dev/null)
+
+    [ -z "$APPROVAL_INFO" ] && continue
+
+    # Extract ticket key from MR branch/title
+    MR_META_AP=$(cd "$REPO" && glab api "projects/:fullpath/merge_requests/$MR_IID" 2>/dev/null || echo "{}")
+    TICKET_KEY=$(echo "$MR_META_AP" | TICKET_KEY_PATTERN="$TICKET_KEY_PATTERN" python3 -c "
+import sys, json, re, os
+m = json.load(sys.stdin)
+pat = os.environ.get('TICKET_KEY_PATTERN','[A-Z]+-\d+')
+for src in (m.get('source_branch',''), m.get('title','')):
+    mm = re.search(pat, src or '')
+    if mm: print(mm.group(0)); break
+" 2>/dev/null)
+    [ -z "$TICKET_KEY" ] && continue
+
+    # Check dedupe: did we already handle this approval?
+    STATE_KEY="approved-${REPO_NAME}-${MR_IID}"
+    ALREADY=$(python3 -c "
+import json
+s = json.load(open('$STATE_FILE'))
+print(s.get('approved_mrs',{}).get('$STATE_KEY',''))" 2>/dev/null)
+    [ -n "$ALREADY" ] && continue
+
+    # Check current Jira status — only act if still in Code Review
+    CUR_STATUS=$(jira_current_status "$TICKET_KEY" 2>/dev/null)
+    CUR_LOW=$(printf '%s' "${CUR_STATUS:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ "$CUR_LOW" != *"code review"* ]]; then
+      echo "  [approved] !$MR_IID $TICKET_KEY — Jira already '$CUR_STATUS', skip" >> "$LOG_FILE"
+      # Still save state so we don't re-check next tick
+      python3 -c "
+import json, tempfile, os
+sf = '$STATE_FILE'
+s = json.load(open(sf))
+s.setdefault('approved_mrs',{})['$STATE_KEY'] = '$CUR_STATUS'
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+"
+      continue
+    fi
+
+    # Transition to Ready For QA
+    if jira_transition_to "$TICKET_KEY" "Ready For QA" 2>>"$LOG_FILE"; then
+      echo "  [approved] !$MR_IID $TICKET_KEY → Ready For QA (auto)" >> "$LOG_FILE"
+    else
+      echo "  [approved] !$MR_IID $TICKET_KEY → Ready For QA FAILED" >> "$LOG_FILE"
+    fi
+
+    # Reassign ticket back to owner (unassign from reviewer)
+    jira_assign "$TICKET_KEY" "$JIRA_ACCOUNT_ID" 2>>"$LOG_FILE" || true
+
+    # Notify via Telegram
+    MR_URL_AP=$(echo "$MR_META_AP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('web_url',''))" 2>/dev/null)
+    APPROVER_NAMES=$(echo "$APPROVAL_INFO" | tr ',' ', ')
+    tg_send_maybe "$TICKET_KEY approved by $APPROVER_NAMES — moved to Ready For QA
+MR: $MR_URL_AP"
+
+    # Immediate Tempo suggestion for review time
+    if type tempo_suggest_now >/dev/null 2>&1; then
+      tempo_suggest_now "$TICKET_KEY" "$TICKET_KEY approved → Ready For QA. Log time?" \
+        >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    # Save state
+    python3 -c "
+import json, tempfile, os
+sf = '$STATE_FILE'
+s = json.load(open(sf))
+s.setdefault('approved_mrs',{})['$STATE_KEY'] = 'Ready For QA'
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+"
+  done
 done
 
 # =============================================================================
@@ -581,6 +685,8 @@ for c in d['changes']:
              {'text':'Open in Jira','url':f'{os.environ[\"JIRA_SITE\"]}/browse/{key}'}],
             [{'text':'Later','callback_data':f'tk_later:{key}'}]
         ]
+    elif 'in progress' in new_l or 'work in progress' in new_l:
+        kb = None
     else:
         kb = [
             [{'text':'Proceed','callback_data':f'tk_start:{key}'},
@@ -591,7 +697,7 @@ for c in d['changes']:
     # Tempo suggestion when the transition landed in Code Review (dev work
     # just finished on this ticket). Format: '<key>|<new_lower>'.
     extra = f\"{key}|{new_l}\"
-    print('STATUS_CHANGE\t' + text.replace('\t',' ').replace('\n','\\\\n') + '\t' + json.dumps(kb) + '\t' + extra)
+    print('STATUS_CHANGE\t' + text.replace('\t',' ').replace('\n','\\\\n') + '\t' + (json.dumps(kb) if kb else '') + '\t' + extra)
 " 2>>"$LOG_FILE" | while IFS=$'\t' read -r KIND TEXT KB EXTRA; do
   [ -z "$TEXT" ] && continue
   TEXT_DEC=$(printf '%b' "$TEXT")

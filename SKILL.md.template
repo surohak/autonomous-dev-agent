@@ -580,8 +580,17 @@ After the audit passes, commit:
      --target-branch "<target-branch>"
    ```
 
-   **Capture the MR URL** from `glab mr create` output — use this exact URL in all notifications.
-   NEVER construct GitLab MR URLs manually (the path is `/-/merge_requests/`, not `/-/mergerequests/`).
+   **Capture the MR URL** from `glab mr create` output — use this EXACT URL in all notifications.
+
+   ⚠️ CRITICAL: NEVER construct GitLab MR URLs manually. The agent has repeatedly
+   gotten this wrong (e.g. `jobleadsapp` instead of `jobleads_app`, `mergerequests`
+   instead of `merge_requests`). The ONLY safe source is the URL printed by
+   `glab mr create`. Parse it from the output with:
+   ```bash
+   MR_URL=$(glab mr create ... 2>&1 | grep -oE 'https://[^ ]+merge_requests/[0-9]+')
+   ```
+   If empty, fall back to: `glab mr list --search="<KEY>" --state=opened --output=json`
+   and extract `web_url` from the JSON. NEVER type out a GitLab URL by hand.
 
    MR description format — a plain bullet list summarising what changed. 3–6 bullets max. Nothing else.
 

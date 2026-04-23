@@ -113,6 +113,7 @@ _render_out=$(
   REPO_ID="$REPO_ID" TICKET="$TICKET" MR_IID="$MR_IID" \
   MR_URL="$MR_URL" BRANCH="$BRANCH" TARGET="$TARGET" \
   SUMMARY="$SUMMARY" AUTO_REVIEWER="$AUTO_REVIEWER" \
+  WORK_TZ="${WORK_TZ:-Europe/Berlin}" \
   python3 <<'PY'
 import base64, json, os, sys
 
@@ -179,6 +180,20 @@ for r in reviewers:
         rows.append(row); row = []
 if row:
     rows.append(row)
+
+import datetime as _dt, subprocess as _sp
+try:
+    _today = _sp.check_output(
+        ["date", "+%F"], env={**os.environ, "TZ": os.environ.get("WORK_TZ", "Europe/Berlin")}
+    ).decode().strip()
+except Exception:
+    _today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+rows.append([
+    {"text": "Log 30m", "callback_data": f"tm_log:{ticket}:{_today}:1800"},
+    {"text": "Log 1h",  "callback_data": f"tm_log:{ticket}:{_today}:3600"},
+    {"text": "Log 2h",  "callback_data": f"tm_log:{ticket}:{_today}:7200"},
+    {"text": "Log 4h",  "callback_data": f"tm_log:{ticket}:{_today}:14400"},
+])
 
 rows.append([
     {"text": "Open in GitLab", "url": mr_url},

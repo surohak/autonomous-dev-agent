@@ -3,6 +3,30 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.27] - 2026-04-23
+
+### Fixed
+
+- **Strengthened MR URL safety**: agent prompts now explicitly warn
+  against hand-typed GitLab URLs (citing past `jobleadsapp` /
+  `mergerequests` errors) and provide a concrete `grep` command to
+  parse the URL from `glab mr create` output.
+
+### Added
+
+- **Log time buttons on MR-opened card**: the Telegram notification
+  sent when the agent opens an MR now includes `[Log 30m]` `[Log 1h]`
+  `[Log 2h]` `[Log 4h]` buttons that post a Tempo worklog in one tap,
+  reusing the existing `tm_log` callback flow.
+- **Auto-transition approved MRs to Ready For QA** (watcher 1c): every
+  2-minute tick checks author's open MRs for approvals; if a ticket is
+  still in Code Review despite the MR being approved, the watcher
+  transitions it to Ready For QA, reassigns to owner, and notifies via
+  Telegram. Deduped via `watcher-state.json`.
+- **Buttonless WIP status notifications**: when the agent moves a
+  ticket to Work In Progress, the watcher now sends a plain text
+  notification instead of showing Proceed/Open buttons.
+
 ## [1.0.26] - 2026-04-23
 
 ### Fixed
