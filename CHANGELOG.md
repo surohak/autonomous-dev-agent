@@ -3,6 +3,25 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.31] - 2026-04-23
+
+### Fixed
+
+- **`/status` shows "Running"** when there are active agent runs instead
+  of always showing "Stopped" (launchd entry disappears between scheduled
+  triggers but spawned processes persist).
+- **`/status` result line** now shows clean "Success (exit 0)" or
+  "Failed (exit N)" instead of dumping the raw log tail.
+- **Watcher stop no longer reports a crash**: SIGTERM (exit 143) and
+  SIGINT (exit 130) are recognized as normal shutdown signals — no more
+  spurious "Watcher crashed" Telegram warnings when stopping the watcher.
+- **Review nudge `AGE_HOURS` guard**: added numeric validation before
+  `printf '%.0f'` to prevent stderr spam when tab-split produces a
+  non-numeric value.
+- **Test fixes**: `test_admit.sh` and `test_tempo_suggest.sh` used `ua-`
+  prefix in assertions but `PROJ-` in fixture data — corrected to match.
+  Full suite now passes 24/24.
+
 ## [1.0.30] - 2026-04-23
 
 ### Added
