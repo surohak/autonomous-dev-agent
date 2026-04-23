@@ -192,12 +192,60 @@ JIRA_RESPONSE=$(jira_search \
 
 TICKET_COUNT=$(echo "$JIRA_RESPONSE" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('issues',[])))" 2>/dev/null || echo "0")
 
-# 1b. Check Jira for code-review tickets (Code Review status assigned to me, MR author != me)
+# 1b. Check Jira for code-review tickets (Code Review status assigned to me)
+#     Then filter out tickets where the MR author is ME (those are my own MRs
+#     waiting for someone else — not review work for the agent).
 REVIEW_RESPONSE=$(jira_search \
   "assignee = '${JIRA_ACCOUNT_ID}' AND status = 'Code Review' ORDER BY updated DESC" \
   10 "summary" 2>/dev/null)
 
-REVIEW_COUNT=$(echo "$REVIEW_RESPONSE" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('issues',[])))" 2>/dev/null || echo "0")
+REVIEW_COUNT=$(echo "$REVIEW_RESPONSE" | \
+  GITLAB_USER="${GITLAB_USER:-}" \
+  CONFIG_PATH="${CONFIG_FILE:-$SKILL_DIR/config.json}" \
+  python3 -c "
+import sys, json, subprocess, os, re
+
+issues = json.load(sys.stdin).get('issues', [])
+if not issues:
+    print(0); raise SystemExit(0)
+
+my_gl_user = os.environ.get('GITLAB_USER', '')
+cfg = json.load(open(os.environ['CONFIG_PATH']))
+_proj0 = (cfg.get('projects') or [{}])[0] if isinstance(cfg.get('projects'), list) else {}
+repos = cfg.get('repositories') or _proj0.get('repositories') or {}
+pat = _proj0.get('tracker',{}).get('ticketKeyPattern') or '[A-Z]+-\d+'
+
+real_reviews = 0
+for iss in issues:
+    key = iss.get('key', '')
+    is_others_mr = False
+    for slug, meta in repos.items():
+        local = meta.get('localPath')
+        if not local or not os.path.isdir(local):
+            continue
+        try:
+            r = subprocess.run(
+                ['glab', 'mr', 'list', '--search', key, '--state', 'opened', '--output', 'json'],
+                cwd=local, capture_output=True, text=True, timeout=10)
+            mrs = json.loads(r.stdout or '[]')
+            for m in mrs:
+                branch = m.get('source_branch', '') or ''
+                title = m.get('title', '') or ''
+                if key not in branch and key not in title:
+                    continue
+                author = m.get('author', {}).get('username', '')
+                if author and author != my_gl_user:
+                    is_others_mr = True
+                    break
+        except Exception:
+            pass
+        if is_others_mr:
+            break
+    if is_others_mr:
+        real_reviews += 1
+
+print(real_reviews)
+" 2>/dev/null || echo "0")
 
 # 1c. Check for pending review discussion questions from user (via Telegram)
 DISCUSSION_COUNT=$(ls "$REVIEWS_DIR/"*-discussions.json 2>/dev/null | wc -l | tr -d ' ' || echo "0")
