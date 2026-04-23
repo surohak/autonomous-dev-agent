@@ -31,6 +31,13 @@ cmd_status() {
   local run_lines
   run_lines=$(active_run_summary 2>/dev/null || echo "")
 
+  # If there are active runs, the agent is running regardless of launchd state
+  # (the launchd entry disappears between scheduled triggers but spawned
+  # agent processes persist).
+  if [ -n "$run_lines" ] && [[ "$agent_status" != *"Running"* ]]; then
+    agent_status="Running"
+  fi
+
   if [ -n "$run_lines" ]; then
     local run_count
     run_count=$(printf '%s\n' "$run_lines" | wc -l | tr -d ' ')
