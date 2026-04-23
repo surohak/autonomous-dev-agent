@@ -628,6 +628,18 @@ for m in data['messages']:
   # Strip leading slash and @botname suffix (for slash commands and group mentions)
   CMD_CLEAN=$(echo "$CMD" | sed -E 's/^\///; s/@[a-zA-Z0-9_]+[ ]*/ /')
   CMD_LOWER=$(echo "$CMD_CLEAN" | tr '[:upper:]' '[:lower:]' | xargs)
+  # Normalize underscore-joined menu commands so the existing space-delimited
+  # case patterns match both typed and menu-tapped variants.
+  # Order matters: longest prefixes first to avoid partial matches.
+  CMD_LOWER=$(echo "$CMD_LOWER" | sed -E \
+    -e 's/^tempo_summary_today/tempo summary today/' \
+    -e 's/^tempo_summary_week/tempo summary week/' \
+    -e 's/^tempo_summary/tempo summary/' \
+    -e 's/^tempo_today/tempo today/' \
+    -e 's/^tempo_week/tempo week/' \
+    -e 's/^status_all/status all/' \
+    -e 's/^workflow_refresh/workflow refresh/' \
+  )
 
   case "$CMD_LOWER" in
 
