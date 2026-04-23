@@ -322,11 +322,15 @@ if jira_site and email and token:
             with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 d = json.loads(resp.read())
                 key = d.get("key", "")
-                summary_text = (d.get("fields", {}).get("summary") or "")[:60]
+                summary_text = (d.get("fields", {}).get("summary") or "")
                 status = (d.get("fields", {}).get("status", {}).get("name") or "")
                 id_to_info[iid] = {"key": key, "summary": summary_text, "status": status}
         except Exception:
             pass
+
+def fmt_dur(secs):
+    h, m = divmod(secs // 60, 60)
+    return f"{h}h {m:02d}m" if h and m else (f"{h}h" if h else f"{m}m")
 
 entries = []
 total_secs = 0
@@ -336,24 +340,23 @@ for w in sorted(results, key=lambda x: x.get("startDate", "") + x.get("startTime
     iid = str(w.get("issue", {}).get("id", ""))
     info = id_to_info.get(iid, {})
     key = info.get("key") or w.get("issue", {}).get("key", f"#{iid}")
-    summary_text = info.get("summary", "")
-    status = info.get("status", "")
+    jira_summary = info.get("summary", "")
+    status = (info.get("status") or "").lower()
     desc = (w.get("description", "") or "").strip()
 
-    h, m = divmod(secs // 60, 60)
-    dur = f"{h}h{m:02d}m" if h and m else (f"{h}h" if h else f"{m}m")
+    # Prefer worklog description; fall back to Jira summary when
+    # Tempo only has the generic "Working on issue XXX" placeholder.
+    if desc and not desc.lower().startswith("working on issue"):
+        text = desc
+    elif jira_summary:
+        text = jira_summary
+    else:
+        text = desc or ""
 
-    line = f"• {key} — {dur}"
-    if desc and desc != "Working on issue":
-        line += f" — {desc[:80]}"
-    elif summary_text:
-        line += f" — {summary_text}"
-    if status:
-        line += f" ({status})"
+    dur = fmt_dur(secs)
+    meta = f"{dur}, {status}" if status else dur
+    line = f"{key} -- {text} ({meta})" if text else f"{key} ({meta})"
     entries.append(line)
-
-th, tm = divmod(total_secs // 60, 60)
-total_fmt = f"{th}h{tm:02d}m" if th and tm else (f"{th}h" if th else f"{tm}m")
 
 by_date = {}
 for w in results:
@@ -361,14 +364,19 @@ for w in results:
     by_date.setdefault(d, 0)
     by_date[d] += w.get("timeSpentSeconds", 0)
 
-header = f"Tempo — {label} ({total_fmt}, {len(results)} entries)"
-if len(by_date) > 1:
+if len(by_date) == 1:
+    from datetime import datetime
+    d = list(by_date.keys())[0]
+    try:
+        dt = datetime.strptime(d, "%Y-%m-%d")
+        header = f"{dt.strftime('%B %d, %Y')} -- {fmt_dur(total_secs)}"
+    except ValueError:
+        header = f"{d} -- {fmt_dur(total_secs)}"
+else:
     date_parts = []
     for d in sorted(by_date):
-        s = by_date[d]
-        dh, dm = divmod(s // 60, 60)
-        date_parts.append(f"{d}: {dh}h{dm:02d}m" if dh and dm else f"{d}: {dh}h" if dh else f"{d}: {dm}m")
-    header += "\n" + " | ".join(date_parts)
+        date_parts.append(f"{d}: {fmt_dur(by_date[d])}")
+    header = f"{label} -- {fmt_dur(total_secs)}\n" + " | ".join(date_parts)
 
 print(header + "\n\n" + "\n".join(entries))
 PY
