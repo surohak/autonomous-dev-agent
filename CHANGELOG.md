@@ -3,6 +3,19 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.25] - 2026-04-22
+
+### Added
+
+- **`/tempo summary` Telegram command**: read-only view of already-logged
+  Tempo worklogs. Pulls entries from the Tempo REST API, enriches each
+  with Jira issue key/summary/status, and sends a formatted summary to
+  Telegram with per-entry durations and a total.
+  - `/tempo summary` — yesterday (default)
+  - `/tempo summary today` — today's worklogs so far
+  - `/tempo summary week` — last 7 days with per-date breakdown
+- Updated `/help` text to document the new summary sub-commands.
+
 ## [1.0.24] - 2026-04-22
 
 Comprehensive reliability pass across cherry-pick, Telegram handler,

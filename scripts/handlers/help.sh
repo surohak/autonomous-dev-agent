@@ -52,9 +52,11 @@ Promote to main
 - /cherries — Done tickets not yet on main, each with [Cherry-pick to main]
 - /cherry PROJ-XXX — cherry-pick now
 
-Tempo (worklog suggestions)
+Tempo (worklog suggestions + summary)
 - /tempo — suggestions for yesterday (one card per ticket×day)
 - /tempo today, /tempo week — other windows
+- /tempo summary — read-only view of already-logged Tempo worklogs (yesterday)
+- /tempo summary today, /tempo summary week — other summary windows
 - Immediate cards also fire right after dev-done (ticket → Code Review)
   and review-done (MR approved → Ready For QA). Respects Skip and the
   15-min floor. Set TEMPO_AUTO_SUGGEST=0 in secrets.env to silence.

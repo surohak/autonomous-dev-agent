@@ -2795,8 +2795,8 @@ PY
       ;;
 
     tempo\ *)
-      # e.g. "tempo today", "tempo week", "tempo yesterday"
-      cmd_tempo "$(echo "$CMD_LOWER" | awk '{print $2}')"
+      # e.g. "tempo today", "tempo week", "tempo summary", "tempo summary today"
+      cmd_tempo "$(echo "$CMD_LOWER" | awk '{print $2}')" "$(echo "$CMD_LOWER" | awk '{print $3}')"
       ;;
 
     # --- Tempo callback taps ----------------------------------------------

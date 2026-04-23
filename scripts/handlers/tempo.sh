@@ -227,19 +227,181 @@ PY
   return 0
 }
 
+# ---------- summary (read-only view of already-logged worklogs) -----------
+
+# cmd_tempo_summary [window]
+#   window = "" (yesterday, default) | "today" | "week"
+#
+# Pulls existing Tempo worklogs and formats them as a concise summary with
+# ticket keys, durations, descriptions, and a total.
+cmd_tempo_summary() {
+  local window="${1:-}"
+  local from_date to_date label
+  local tz="${WORK_TZ:-Europe/Berlin}"
+  case "$window" in
+    ""|yesterday)
+      label="yesterday"
+      from_date=$(TZ="$tz" python3 -c 'from datetime import date, timedelta; print(date.today() - timedelta(days=1))')
+      to_date="$from_date"
+      ;;
+    today)
+      label="today"
+      from_date=$(TZ="$tz" date +%F)
+      to_date="$from_date"
+      ;;
+    week)
+      label="last 7 days"
+      to_date=$(TZ="$tz" date +%F)
+      from_date=$(TZ="$tz" python3 -c 'from datetime import date, timedelta; print(date.today() - timedelta(days=6))')
+      ;;
+    *)
+      tg_send "Unknown /tempo summary window: $window. Use: today, yesterday, week."
+      return 0
+      ;;
+  esac
+
+  local account_id="${JIRA_ACCOUNT_ID:-}"
+  if [[ -z "$account_id" ]]; then
+    tg_send "Cannot fetch summary — JIRA_ACCOUNT_ID not set."
+    return 1
+  fi
+
+  local ping; ping=$(tempo_ping 2>&1)
+  if [[ "$ping" != OK:* ]]; then
+    tg_send "Tempo not reachable: $ping"
+    return 1
+  fi
+
+  tg_send "Fetching Tempo worklogs ($label)…"
+
+  local raw
+  raw=$(tempo_list_worklogs "$account_id" "$from_date" "$to_date" 2>/dev/null)
+  if [[ -z "$raw" ]]; then
+    tg_send "No response from Tempo API."
+    return 1
+  fi
+
+  local summary
+  summary=$(JIRA_SITE="${JIRA_SITE:-}" \
+            ATLASSIAN_EMAIL="${ATLASSIAN_EMAIL:-}" \
+            ATLASSIAN_API_TOKEN="${ATLASSIAN_API_TOKEN:-}" \
+            python3 - <<'PY' "$raw" "$label"
+import json, sys, os, urllib.request, base64, ssl
+
+raw_json = sys.argv[1]
+label = sys.argv[2]
+
+try:
+    data = json.loads(raw_json)
+except (json.JSONDecodeError, TypeError):
+    print("Failed to parse Tempo response.")
+    sys.exit(0)
+
+results = data.get("results", [])
+if not results:
+    print(f"No worklogs found for {label}.")
+    sys.exit(0)
+
+issue_ids = {str(w["issue"]["id"]) for w in results if w.get("issue", {}).get("id")}
+id_to_info = {}
+
+jira_site = os.environ.get("JIRA_SITE", "")
+email = os.environ.get("ATLASSIAN_EMAIL", "")
+token = os.environ.get("ATLASSIAN_API_TOKEN", "")
+
+if jira_site and email and token:
+    ctx = ssl.create_default_context()
+    auth = base64.b64encode(f"{email}:{token}".encode()).decode()
+    for iid in issue_ids:
+        try:
+            url = f"{jira_site}/rest/api/3/issue/{iid}?fields=summary,status"
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Basic {auth}",
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                d = json.loads(resp.read())
+                key = d.get("key", "")
+                summary_text = (d.get("fields", {}).get("summary") or "")[:60]
+                status = (d.get("fields", {}).get("status", {}).get("name") or "")
+                id_to_info[iid] = {"key": key, "summary": summary_text, "status": status}
+        except Exception:
+            pass
+
+entries = []
+total_secs = 0
+for w in sorted(results, key=lambda x: x.get("startDate", "") + x.get("startTime", "")):
+    secs = w.get("timeSpentSeconds", 0)
+    total_secs += secs
+    iid = str(w.get("issue", {}).get("id", ""))
+    info = id_to_info.get(iid, {})
+    key = info.get("key") or w.get("issue", {}).get("key", f"#{iid}")
+    summary_text = info.get("summary", "")
+    status = info.get("status", "")
+    desc = (w.get("description", "") or "").strip()
+
+    h, m = divmod(secs // 60, 60)
+    dur = f"{h}h{m:02d}m" if h and m else (f"{h}h" if h else f"{m}m")
+
+    line = f"• {key} — {dur}"
+    if desc and desc != "Working on issue":
+        line += f" — {desc[:80]}"
+    elif summary_text:
+        line += f" — {summary_text}"
+    if status:
+        line += f" ({status})"
+    entries.append(line)
+
+th, tm = divmod(total_secs // 60, 60)
+total_fmt = f"{th}h{tm:02d}m" if th and tm else (f"{th}h" if th else f"{tm}m")
+
+by_date = {}
+for w in results:
+    d = w.get("startDate", "?")
+    by_date.setdefault(d, 0)
+    by_date[d] += w.get("timeSpentSeconds", 0)
+
+header = f"Tempo — {label} ({total_fmt}, {len(results)} entries)"
+if len(by_date) > 1:
+    date_parts = []
+    for d in sorted(by_date):
+        s = by_date[d]
+        dh, dm = divmod(s // 60, 60)
+        date_parts.append(f"{d}: {dh}h{dm:02d}m" if dh and dm else f"{d}: {dh}h" if dh else f"{d}: {dm}m")
+    header += "\n" + " | ".join(date_parts)
+
+print(header + "\n\n" + "\n".join(entries))
+PY
+  )
+
+  if [[ -n "$summary" ]]; then
+    tg_send "$summary"
+  else
+    tg_send "No worklogs found for $label."
+  fi
+}
+
 # ---------- commands -------------------------------------------------------
 
 # cmd_tempo [window]
-#   window = "" (yesterday, default) | "today" | "week"
+#   window = "" (yesterday, default) | "today" | "week" | "summary [window]"
 cmd_tempo() {
   local window="${1:-}"
   local flags=()
   local label
+
+  # Route /tempo summary [window] to the read-only summary command.
+  if [[ "$window" == "summary" ]]; then
+    local summary_window="${2:-}"
+    cmd_tempo_summary "$summary_window"
+    return $?
+  fi
+
   case "$window" in
     ""|yesterday) label="yesterday"; flags=();;
     today)        label="today";     flags=(--date "$(TZ="${WORK_TZ:-Europe/Berlin}" date +%F)");;
     week)         label="last 7 days"; flags=(--week);;
-    *)            tg_send "Unknown /tempo window: $window. Use: today, yesterday, week."; return 0;;
+    *)            tg_send "Unknown /tempo window: $window. Use: today, yesterday, week, summary."; return 0;;
   esac
 
   if ! type tempo_ping >/dev/null 2>&1; then
