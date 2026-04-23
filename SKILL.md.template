@@ -199,6 +199,10 @@ curl -s -u "${ATLASSIAN_EMAIL}:${ATLASSIAN_API_TOKEN}" \
   }'
 ```
 
+**IMPORTANT — idle runs**: If ALL three queries return zero results (no New/To Do, no Code Review,
+no Ready For QA/Done tickets), **exit silently without sending any Telegram message**. Do NOT send
+"idle", "nothing to do", or "queue empty" notifications — they are noise. Just finish the run.
+
 For each Code Review ticket:
 1. Find the MR: `glab mr list --search="<TICKET_KEY>"` in both SSR and Blog repos.
 2. If MR `author.username == config.owner.gitlabUsername` → **skip** (your own MR, don't self-review).
