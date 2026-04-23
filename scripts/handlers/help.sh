@@ -48,6 +48,10 @@ Code review (/reviews)
 - Re-review detection is automatic — the round number shows in the card
   (round 2, 3, …) after the dev pushes fixes and re-assigns.
 
+Standup & Describe
+- /standup — generate daily standup from Tempo + Jira + open MRs
+- /describe UA-XXX — generate MR description from diff + Jira context
+
 Merge & Promote
 - /merge UA-XXX — merge approved MR to stage
 - /cherries — Done tickets not yet on main (combined view)
@@ -63,6 +67,11 @@ Tempo (worklog suggestions + summary)
   15-min floor. Set TEMPO_AUTO_SUGGEST=0 in secrets.env to silence.
 - Per-card: [Log <Xh Ym>] logs to Tempo · [Edit] prompts for a custom
   duration · [Skip] dismisses. After logging, [Undo] appears.
+
+Review nudges
+- MRs in Code Review >24h get daily follow-up notifications
+- [Follow-up in DM] sends a Slack nudge to the reviewer
+- Nudge frequency: once per 24h per MR
 
 Typed shortcuts
 - run PROJ-XXX, retry PROJ-XXX, approve PROJ-XXX, skip PROJ-XXX

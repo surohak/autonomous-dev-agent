@@ -3,6 +3,21 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.29] - 2026-04-23
+
+### Added
+
+- **`/standup` command**: auto-generates a daily standup summary from
+  yesterday's Tempo worklogs, current in-progress/code-review tickets,
+  blocked tickets, and open MRs. One tap to get a copy-ready standup.
+- **`/describe UA-XXX` command**: analyzes the git diff of the open MR
+  for a ticket and generates a concise MR description with file change
+  categories and commit summaries.
+- **Reviewer response time tracking**: the watcher now detects MRs that
+  have been in Code Review for more than 24 hours and sends a daily
+  nudge notification with a `[Follow-up in DM]` button that sends a
+  friendly Slack DM to the reviewer.
+
 ## [1.0.28] - 2026-04-23
 
 ### Changed

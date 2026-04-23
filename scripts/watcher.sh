@@ -4,6 +4,7 @@
 #   1a. CI pipeline status on user's open MRs         → [Auto-fix] [Open] [Snooze]
 #   1b. New reviewer comments on user's open MRs      → [Auto-fix] [Open] [Seen]
 #   1c. Approved MRs still in Code Review             → auto-transition to Ready For QA
+#   1d. Review time tracking (>24h nudge)             → [Follow-up in DM] [Open MR]
 #   2.  Newly assigned Jira tickets + status changes  → [Start now] [Later] [Skip]
 #
 # Runs every 2 minutes via launchd. Stateless re-runs — state is in
@@ -499,6 +500,137 @@ with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
 os.replace(tp, sf)
 "
   done
+
+  # --- 1d. Review time tracking: nudge if Code Review > 24h ----------------
+  # For each MR authored by me that has a reviewer and Jira status "Code Review",
+  # check how long it has been. Every 24 hours send a reminder with a
+  # "Follow-up in DM" button.
+  echo "$MY_MR_LIST" | python3 -c "
+import sys, json
+for m in json.load(sys.stdin):
+    if m.get('state','') == 'opened':
+        reviewers = m.get('reviewers') or []
+        if reviewers:
+            print(m.get('iid'))
+" 2>/dev/null | while read -r MR_IID; do
+    [ -z "$MR_IID" ] && continue
+
+    MR_META_RV=$(cd "$REPO" && glab api "projects/:fullpath/merge_requests/$MR_IID" 2>/dev/null || echo "{}")
+
+    REVIEW_INFO=$(echo "$MR_META_RV" | TICKET_KEY_PATTERN="$TICKET_KEY_PATTERN" CONFIG_FILE="${CONFIG_FILE:-$SKILL_DIR/config.json}" REPO_NAME="$REPO_NAME" python3 -c "
+import sys, json, re, os
+from datetime import datetime, timezone
+m = json.load(sys.stdin)
+pat = os.environ.get('TICKET_KEY_PATTERN','[A-Z]+-\d+')
+tk = ''
+for src in (m.get('source_branch',''), m.get('title','')):
+    mm = re.search(pat, src or '')
+    if mm: tk = mm.group(0); break
+if not tk: exit()
+
+reviewers = m.get('reviewers') or []
+if not reviewers: exit()
+r = reviewers[0]
+username = r.get('username','')
+name = r.get('name', username)
+
+# Find Slack user ID from config
+cfg = json.load(open(os.environ['CONFIG_FILE']))
+_proj0 = (cfg.get('projects') or [{}])[0] if isinstance(cfg.get('projects'), list) else {}
+proj_reviewers = _proj0.get('reviewers') or []
+slack_id = ''
+for rv in proj_reviewers:
+    if rv.get('gitlabUsername') == username:
+        slack_id = rv.get('slackUserId') or ''
+        name = rv.get('name') or name
+        break
+
+# Calculate review age from updated_at (when reviewer was set)
+created = m.get('created_at') or m.get('updated_at','')
+if not created: exit()
+try:
+    # GitLab returns ISO 8601 with Z
+    created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+    age_hours = (datetime.now(timezone.utc) - created_dt).total_seconds() / 3600
+except Exception:
+    exit()
+
+mr_url = m.get('web_url','')
+print(f'{tk}\t{username}\t{name}\t{slack_id}\t{age_hours:.1f}\t{mr_url}')
+" 2>/dev/null)
+
+    [ -z "$REVIEW_INFO" ] && continue
+
+    IFS=$'\t' read -r TICKET_KEY RV_USERNAME RV_NAME RV_SLACK_ID AGE_HOURS MR_URL_RV <<< "$REVIEW_INFO"
+
+    # Only care about tickets actually in Code Review
+    CUR_ST_RV=$(jira_current_status "$TICKET_KEY" 2>/dev/null)
+    CUR_LOW_RV=$(printf '%s' "${CUR_ST_RV:-}" | tr '[:upper:]' '[:lower:]')
+    [[ "$CUR_LOW_RV" != *"code review"* ]] && continue
+
+    # Check if age >= 24h
+    AGE_H_INT=$(printf '%.0f' "$AGE_HOURS")
+    [ "$AGE_H_INT" -lt 24 ] 2>/dev/null && continue
+
+    # Dedupe: only nudge once per 24-hour window
+    STATE_KEY_RV="review_nudge-${REPO_NAME}-${MR_IID}"
+    LAST_NUDGE=$(python3 -c "
+import json
+s = json.load(open('$STATE_FILE'))
+print(s.get('review_nudges',{}).get('$STATE_KEY_RV','0'))" 2>/dev/null || echo "0")
+    HOURS_SINCE_NUDGE=$(python3 -c "
+from datetime import datetime, timezone
+last = float('$LAST_NUDGE' or 0)
+if last == 0: print(999)
+else:
+    age = (datetime.now(timezone.utc).timestamp() - last) / 3600
+    print(f'{age:.1f}')
+" 2>/dev/null || echo "999")
+    HSN_INT=$(printf '%.0f' "$HOURS_SINCE_NUDGE")
+    [ "$HSN_INT" -lt 24 ] 2>/dev/null && continue
+
+    # Build and send nudge notification
+    AGE_DAYS=$(( AGE_H_INT / 24 ))
+    AGE_LABEL="${AGE_DAYS}d"
+    [ "$AGE_DAYS" -eq 1 ] && AGE_LABEL="1 day"
+    [ "$AGE_DAYS" -gt 1 ] && AGE_LABEL="${AGE_DAYS} days"
+
+    NUDGE_KB=$(TK="$TICKET_KEY" MR_URL="$MR_URL_RV" RV_USER="$RV_USERNAME" RV_SLACK="$RV_SLACK_ID" python3 -c "
+import json, os
+tk = os.environ['TK']
+rv = os.environ['RV_USER']
+slack = os.environ['RV_SLACK']
+cb_data = f'rv_follow:{tk}:{rv}:{slack}'
+if len(cb_data.encode()) > 64:
+    cb_data = f'rv_follow:{tk}:{rv}:'
+kb = [
+    [{'text':'Follow-up in DM','callback_data':cb_data},
+     {'text':'Open MR','url':os.environ['MR_URL']}],
+    [{'text':'Open in Jira','url':f'{os.environ.get(\"JIRA_SITE\",\"\")}/browse/{tk}'},
+     {'text':'Later','callback_data':f'tk_later:{tk}'}]
+]
+print(json.dumps(kb))
+" 2>/dev/null)
+
+    tg_send_maybe "$TICKET_KEY still in Code Review ($AGE_LABEL)
+Reviewer: $RV_NAME (@$RV_USERNAME)
+MR: $MR_URL_RV" "$NUDGE_KB"
+
+    echo "  [review-nudge] !$MR_IID $TICKET_KEY — in review ${AGE_LABEL}, nudged" >> "$LOG_FILE"
+
+    # Save nudge timestamp
+    python3 -c "
+import json, tempfile, os
+from datetime import datetime, timezone
+sf = '$STATE_FILE'
+s = json.load(open(sf))
+s.setdefault('review_nudges', {})['$STATE_KEY_RV'] = datetime.now(timezone.utc).timestamp()
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+"
+  done
+
 done
 
 # =============================================================================

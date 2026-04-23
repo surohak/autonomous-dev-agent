@@ -62,6 +62,10 @@ source "$SKILL_DIR/scripts/handlers/project.sh"
 source "$SKILL_DIR/scripts/handlers/workflow.sh"
 # shellcheck disable=SC1091
 source "$SKILL_DIR/scripts/handlers/rebase.sh"
+# shellcheck disable=SC1091
+source "$SKILL_DIR/scripts/handlers/standup.sh"
+# shellcheck disable=SC1091
+source "$SKILL_DIR/scripts/handlers/describe.sh"
 
 # OFFSET_FILE is specific to this daemon. Scoped per-bot-token via cfg.sh so
 # per-project bot overrides don't race (each bot polls its own offset).
@@ -782,6 +786,15 @@ PY
 
     retry\ ua-*)
       handler_retry "$CMD"
+      ;;
+
+    standup)
+      handler_standup
+      ;;
+
+    describe\ *)
+      DESC_TK=$(echo "$CMD" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+      handler_describe "$DESC_TK"
       ;;
 
     merge\ *)
@@ -2549,6 +2562,57 @@ PYEOF
       else
         send_telegram "Merge failed:
 $MERGE_RESULT"
+      fi
+      ;;
+
+    rv_follow\ *)
+      # rv_follow <ticket_key> <gitlab_username> <slack_user_id>
+      # Send a follow-up Slack DM to the reviewer asking for a review status.
+      RV_PARTS=$(echo "$CMD" | awk '{print $2}')
+      RV_TK=$(echo "$RV_PARTS" | cut -d: -f1)
+      RV_USER=$(echo "$RV_PARTS" | cut -d: -f2)
+      RV_SLACK=$(echo "$RV_PARTS" | cut -d: -f3)
+
+      if [[ -z "$RV_TK" || -z "$RV_USER" ]]; then
+        send_telegram "Missing ticket or reviewer info."
+      else
+        # Resolve reviewer name and Slack ID from config if not in callback data
+        if [[ -z "$RV_SLACK" || "$RV_SLACK" == "-" ]]; then
+          RV_SLACK=$(CONFIG_FILE="${CONFIG_FILE:-$SKILL_DIR/config.json}" USERNAME="$RV_USER" python3 -c "
+import json, os
+cfg = json.load(open(os.environ['CONFIG_FILE']))
+proj = (cfg.get('projects') or [{}])[0] if isinstance(cfg.get('projects'), list) else {}
+for r in (proj.get('reviewers') or []):
+    if r.get('gitlabUsername') == os.environ['USERNAME']:
+        print(r.get('slackUserId') or ''); break
+" 2>/dev/null)
+        fi
+
+        if [[ -z "$RV_SLACK" || "$RV_SLACK" == "-" ]]; then
+          send_telegram "No Slack ID found for @$RV_USER. Cannot send DM."
+        else
+          RV_DISPLAY=$(CONFIG_FILE="${CONFIG_FILE:-$SKILL_DIR/config.json}" USERNAME="$RV_USER" python3 -c "
+import json, os
+cfg = json.load(open(os.environ['CONFIG_FILE']))
+proj = (cfg.get('projects') or [{}])[0] if isinstance(cfg.get('projects'), list) else {}
+for r in (proj.get('reviewers') or []):
+    if r.get('gitlabUsername') == os.environ['USERNAME']:
+        print(r.get('name') or os.environ['USERNAME']); break
+else: print(os.environ['USERNAME'])
+" 2>/dev/null)
+          RV_FIRST="${RV_DISPLAY%% *}"
+
+          DM_MSG="Hi ${RV_FIRST}, friendly follow-up on ${RV_TK} — it's been in Code Review for a while. Could you take a look when you have a moment?
+Jira: ${JIRA_SITE:-}/browse/${RV_TK}"
+
+          send_telegram "Sending follow-up DM to $RV_DISPLAY…"
+          if DM_OUT=$(python3 "$SKILL_DIR/scripts/send-slack-dm.py" \
+               --channel "$RV_SLACK" --message "$DM_MSG" 2>&1); then
+            send_telegram "Follow-up DM sent to $RV_DISPLAY for $RV_TK"
+          else
+            send_telegram "Failed to send DM to $RV_DISPLAY: $(printf '%s' "$DM_OUT" | head -1)"
+          fi
+        fi
       fi
       ;;
 
