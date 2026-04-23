@@ -622,6 +622,59 @@ done   # STATUS_CHANGE / NEEDS_CLARIFICATION loop
   fi
 done   # outer per-project loop
 
+# --- Watchdog: detect and bounce a stuck agent launchd job -----------------
+# StartInterval-based launchd jobs won't schedule a new run while the previous
+# one is considered alive. If the agent process dies without a clean exit (e.g.
+# system sleep, Cursor force-quit), launchd reports "last exit code = (never
+# exited)" and the 30-min schedule silently stops. This watchdog runs every
+# watcher tick (~2 min) and bounces the job when it's been stuck for >45 min.
+_agent_label="${LAUNCHD_LABEL_PREFIX}.autonomous-dev-agent"
+_agent_plist="$HOME/Library/LaunchAgents/${_agent_label}.plist"
+if [[ -f "$_agent_plist" ]] && in_work_hours; then
+  _agent_info=$(launchctl print "gui/$(id -u)/${_agent_label}" 2>/dev/null || true)
+  _agent_state=$(echo "$_agent_info" | awk '/^\tstate =/{print $3; exit}')
+  _agent_pid=$(echo "$_agent_info" | awk '/^\tpid =/{print $3; exit}')
+  _agent_last_exit=$(echo "$_agent_info" | grep -m1 'last exit code' || true)
+
+  _needs_bounce=0
+  if [[ "$_agent_state" == "running" && -n "$_agent_pid" ]]; then
+    # Agent is running — check how long. If >45 min, it's likely stuck.
+    _agent_elapsed=$(ps -o etime= -p "$_agent_pid" 2>/dev/null | tr -d ' ')
+    if [[ -n "$_agent_elapsed" ]]; then
+      # etime format: [[dd-]hh:]mm:ss — convert to minutes
+      _agent_mins=$(echo "$_agent_elapsed" | python3 -c "
+import sys, re
+t = sys.stdin.read().strip()
+m = re.match(r'(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)', t)
+if m:
+    d,h,mm,s = (int(x or 0) for x in m.groups())
+    print(d*1440 + h*60 + mm)
+else:
+    print(0)
+" 2>/dev/null)
+      if [[ -n "$_agent_mins" ]] && (( _agent_mins > 45 )); then
+        echo "  [watchdog] agent PID $_agent_pid running for ${_agent_elapsed} (>45min) — killing" >> "$LOG_FILE"
+        kill -9 "$_agent_pid" 2>/dev/null || true
+        sleep 2
+        _needs_bounce=1
+      fi
+    fi
+  elif [[ "$_agent_state" != "running" && "$_agent_last_exit" == *"never exited"* ]]; then
+    # Not running but launchd thinks the last run never exited — stuck.
+    echo "  [watchdog] agent stuck: state=$_agent_state, $_agent_last_exit — bouncing" >> "$LOG_FILE"
+    _needs_bounce=1
+  fi
+
+  if (( _needs_bounce )); then
+    launchctl bootout "gui/$(id -u)/${_agent_label}" 2>/dev/null || true
+    sleep 1
+    launchctl bootstrap "gui/$(id -u)" "$_agent_plist" 2>/dev/null || true
+    launchctl kickstart "gui/$(id -u)/${_agent_label}" 2>/dev/null || true
+    echo "  [watchdog] agent bounced and kickstarted" >> "$LOG_FILE"
+    tg_send "Watchdog: agent launchd job was stuck — bounced and kickstarted." >/dev/null 2>&1 || true
+  fi
+fi
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Watcher done" >> "$LOG_FILE"
 
 # v0.3.1 — rotate any log that has grown past LOG_ROTATE_THRESHOLD_BYTES

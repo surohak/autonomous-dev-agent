@@ -15,6 +15,15 @@ All notable changes to this project are tracked here. Versions follow
   - `/tempo summary today` — today's worklogs so far
   - `/tempo summary week` — last 7 days with per-date breakdown
 - Updated `/help` text to document the new summary sub-commands.
+- **Expanded Telegram bot command menu**: all subcommands registered as
+  separate entries for one-tap access (tempo_summary, tempo_today,
+  tempo_week, status_all, workflow, workflow_refresh, project, queue,
+  rebase). Handler normalizes underscore variants to space-delimited.
+- **Agent launchd watchdog in watcher**: detects when the scheduled
+  agent job is stuck (`last exit code = (never exited)`) or has been
+  running for >45 minutes, bounces the launchd job, kickstarts a new
+  run, and notifies via Telegram. Runs every watcher tick (~2 min)
+  during work hours.
 
 ## [1.0.24] - 2026-04-22
 
