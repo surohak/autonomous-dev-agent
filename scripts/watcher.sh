@@ -444,44 +444,48 @@ s = json.load(open('$STATE_FILE'))
 print(s.get('approved_mrs',{}).get('$STATE_KEY',''))" 2>/dev/null)
     [ -n "$ALREADY" ] && continue
 
-    # Check current Jira status — only act if still in Code Review
+    # Check current Jira status to decide action
     CUR_STATUS=$(jira_current_status "$TICKET_KEY" 2>/dev/null)
     CUR_LOW=$(printf '%s' "${CUR_STATUS:-}" | tr '[:upper:]' '[:lower:]')
-    if [[ "$CUR_LOW" != *"code review"* ]]; then
-      echo "  [approved] !$MR_IID $TICKET_KEY — Jira already '$CUR_STATUS', skip" >> "$LOG_FILE"
-      # Still save state so we don't re-check next tick
-      python3 -c "
-import json, tempfile, os
-sf = '$STATE_FILE'
-s = json.load(open(sf))
-s.setdefault('approved_mrs',{})['$STATE_KEY'] = '$CUR_STATUS'
-fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
-with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
-os.replace(tp, sf)
-"
-      continue
-    fi
-
-    # Transition to Ready For QA
-    if jira_transition_to "$TICKET_KEY" "Ready For QA" 2>>"$LOG_FILE"; then
-      echo "  [approved] !$MR_IID $TICKET_KEY → Ready For QA (auto)" >> "$LOG_FILE"
-    else
-      echo "  [approved] !$MR_IID $TICKET_KEY → Ready For QA FAILED" >> "$LOG_FILE"
-    fi
-
-    # Reassign ticket back to owner (unassign from reviewer)
-    jira_assign "$TICKET_KEY" "$JIRA_ACCOUNT_ID" 2>>"$LOG_FILE" || true
-
-    # Notify via Telegram
     MR_URL_AP=$(echo "$MR_META_AP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('web_url',''))" 2>/dev/null)
+    MR_STATE=$(echo "$MR_META_AP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('state',''))" 2>/dev/null)
     APPROVER_NAMES=$(echo "$APPROVAL_INFO" | tr ',' ', ')
-    tg_send_maybe "$TICKET_KEY approved by $APPROVER_NAMES — moved to Ready For QA
-MR: $MR_URL_AP"
 
-    # Immediate Tempo suggestion for review time
-    if type tempo_suggest_now >/dev/null 2>&1; then
-      tempo_suggest_now "$TICKET_KEY" "$TICKET_KEY approved → Ready For QA. Log time?" \
-        >> "$LOG_FILE" 2>&1 || true
+    if [[ "$CUR_LOW" == *"code review"* ]]; then
+      # Code Review + approved → auto-transition to Ready For QA
+      if jira_transition_to "$TICKET_KEY" "Ready For QA" 2>>"$LOG_FILE"; then
+        echo "  [approved] !$MR_IID $TICKET_KEY → Ready For QA (auto)" >> "$LOG_FILE"
+      else
+        echo "  [approved] !$MR_IID $TICKET_KEY → Ready For QA FAILED" >> "$LOG_FILE"
+      fi
+      jira_assign "$TICKET_KEY" "$JIRA_ACCOUNT_ID" 2>>"$LOG_FILE" || true
+      tg_send_maybe "$TICKET_KEY approved by $APPROVER_NAMES — moved to Ready For QA
+MR: $MR_URL_AP"
+      if type tempo_suggest_now >/dev/null 2>&1; then
+        tempo_suggest_now "$TICKET_KEY" "$TICKET_KEY approved → Ready For QA. Log time?" \
+          >> "$LOG_FILE" 2>&1 || true
+      fi
+
+    elif [[ "$MR_STATE" == "opened" ]] && \
+         [[ "$CUR_LOW" == *"ready for qa"* || "$CUR_LOW" == *"ready for rc"* ]]; then
+      # Ready For QA/RC + approved MR still open → offer merge button
+      echo "  [merge-ready] !$MR_IID $TICKET_KEY — $CUR_STATUS, MR approved, not merged" >> "$LOG_FILE"
+      MERGE_KB=$(TK="$TICKET_KEY" MR_URL="$MR_URL_AP" python3 -c "
+import json, os
+tk = os.environ['TK']
+kb = [
+    [{'text':'Merge to stage','callback_data':f'tk_merge:{tk}'},
+     {'text':'Open MR','url':os.environ['MR_URL']}],
+    [{'text':'Open in Jira','url':f'{os.environ.get(\"JIRA_SITE\",\"\")}/browse/{tk}'},
+     {'text':'Later','callback_data':f'tk_later:{tk}'}]
+]
+print(json.dumps(kb))
+" 2>/dev/null)
+      tg_send_maybe "$TICKET_KEY [$CUR_STATUS] — MR approved by $APPROVER_NAMES, ready to merge
+MR: $MR_URL_AP" "$MERGE_KB"
+
+    else
+      echo "  [approved] !$MR_IID $TICKET_KEY — Jira '$CUR_STATUS', no action" >> "$LOG_FILE"
     fi
 
     # Save state

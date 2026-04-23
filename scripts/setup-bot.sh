@@ -24,6 +24,7 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands
       {"command": "stop",            "description": "Stop scheduled runs"},
       {"command": "start",           "description": "Resume scheduled runs"},
       {"command": "cherries",        "description": "Done tickets ready to cherry-pick to main"},
+      {"command": "merge",           "description": "Merge approved MR to stage (merge UA-XXX)"},
       {"command": "tempo",           "description": "Tempo worklog suggestions (yesterday)"},
       {"command": "tempo_today",     "description": "Tempo suggestions for today"},
       {"command": "tempo_week",      "description": "Tempo suggestions for last 7 days"},

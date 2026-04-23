@@ -784,6 +784,65 @@ PY
       handler_retry "$CMD"
       ;;
 
+    merge\ *)
+      # merge <ticket_key> — find approved open MR and merge to stage
+      TK_KEY=$(echo "$CMD" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+      if [[ -z "$TK_KEY" ]]; then
+        send_telegram "Usage: merge UA-1019"
+      else
+        # Reuse the same Python logic from tk_merge
+        send_telegram "Merging $TK_KEY… (finding MR, verifying approval)"
+        MERGE_RESULT=$(
+          TK_KEY="$TK_KEY" \
+          CONFIG_PATH="$SKILL_DIR/config.json" \
+          python3 <<'PYEOF' 2>&1
+import os, json, subprocess, urllib.parse
+TK_KEY = os.environ["TK_KEY"]
+config = json.load(open(os.environ["CONFIG_PATH"]))
+_proj0 = (config.get("projects") or [{}])[0] if isinstance(config.get("projects"), list) else {}
+repos = config.get("repositories") or _proj0.get("repositories") or {}
+def run(cmd, cwd=None, timeout=30):
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
+found = None
+for slug, meta in repos.items():
+    local = meta.get("localPath")
+    if not local or not os.path.isdir(local): continue
+    rc, out, err = run(["glab", "mr", "list", "--search", TK_KEY, "--state", "opened", "--output", "json"], cwd=local)
+    try: mrs = json.loads(out or "[]")
+    except: mrs = []
+    for m in mrs:
+        if TK_KEY in (m.get("source_branch","") or "") or TK_KEY in (m.get("title","") or ""):
+            found = {"repo": slug, "local": local, "project": meta.get("gitlabProject"), "iid": m.get("iid"), "web_url": m.get("web_url"), "target_branch": m.get("target_branch")}
+            break
+    if found: break
+if not found: print(f"ERR: no open MR found for {TK_KEY}"); raise SystemExit(1)
+proj_enc = urllib.parse.quote(found["project"], safe="")
+rc, out, err = run(["glab", "api", f"projects/{proj_enc}/merge_requests/{found['iid']}/approvals"])
+if rc != 0: print(f"ERR: approvals fetch failed"); raise SystemExit(1)
+ap = json.loads(out)
+approved_by = [a.get("user",{}).get("username","?") for a in (ap.get("approved_by") or [])]
+left = ap.get("approvals_left")
+is_approved = ap.get("approved") is True or (isinstance(left, int) and left == 0) or (approved_by and left is None)
+if not is_approved: print(f"ERR: !{found['iid']} not approved (approvals_left={left})"); raise SystemExit(1)
+rc, out, err = run(["glab", "api", "--method", "PUT", f"projects/{proj_enc}/merge_requests/{found['iid']}/merge", "--field", "should_remove_source_branch=true", "--field", "merge_when_pipeline_succeeds=true"])
+if rc != 0:
+    rc2, out2, err2 = run(["glab", "api", "--method", "PUT", f"projects/{proj_enc}/merge_requests/{found['iid']}/merge", "--field", "should_remove_source_branch=true"])
+    if rc2 != 0: print(f"ERR: merge failed: {(err2 or err)[:300]}"); raise SystemExit(1)
+    out = out2
+target = found.get("target_branch", "stage")
+print(f"OK: merged !{found['iid']} ({found['repo']}) to {target} — {TK_KEY}")
+PYEOF
+        )
+        if printf '%s\n' "$MERGE_RESULT" | grep -q '^OK:'; then
+          send_telegram "$(printf '%s\n' "$MERGE_RESULT" | grep '^OK:' | tail -1)"
+        else
+          send_telegram "Merge failed:
+$MERGE_RESULT"
+        fi
+      fi
+      ;;
+
     cherries)
       # List UA tickets that have YOUR commits on stage not yet on main — regardless
       # of current Jira assignee/status. Source of truth is git, not Jira.
@@ -1068,84 +1127,82 @@ PYEOF
       elif [[ "$CHERRIES_RESULT" == ERR:* ]]; then
         send_telegram "Error: $CHERRIES_RESULT"
       elif [[ "$CHERRIES_RESULT" == LIST* ]]; then
-        # Send one message per entry with appropriate buttons. The first
-        # entry MAY be a {"__combined__": true} summary card — count only
-        # real per-ticket entries for the header.
-        TICKET_COUNT=$(printf '%s\n' "$CHERRIES_RESULT" | tail -n +2 \
-          | grep -cv '"__combined__"' || true)
-        send_telegram "$TICKET_COUNT ticket(s) eligible for cherry-pick to main:"
-        printf '%s\n' "$CHERRIES_RESULT" | tail -n +2 | while IFS= read -r line; do
-          [ -z "$line" ] && continue
-          # Render one item via a single python call so quoting stays sane
-          RENDER=$(
-            python3 - "$line" "$TELEGRAM_CHAT_ID" <<'PYE'
-# NOTE: single-quoted heredoc — bash does NOT expand anything here. The
-# previous version (a) forgot to `import os` and (b) used
-# f"{os.environ[\"JIRA_SITE\"]}/..." (double quotes) is a SyntaxError in 3.9
-# because nested double quotes inside a double-quoted f-string were only
-# allowed in 3.12+ (PEP 701). We use single quotes inside the f-string
-# expression to stay compatible with the /usr/bin/python3 3.9 shipped by
-# the CommandLineTools toolchain.
+        # Render ALL entries into a single Telegram message with one
+        # button per ticket + a "combine all" button at the top.
+        RENDER=$(
+          printf '%s\n' "$CHERRIES_RESULT" | tail -n +2 | \
+          JIRA_SITE="$JIRA_SITE" TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
+          python3 <<'PYE'
 import sys, json, os
-line, chat_id = sys.argv[1], sys.argv[2]
-d = json.loads(line)
-jira_site = os.environ.get("JIRA_SITE", "")
 
-# --- combined-promote summary card (first entry, if present) -------------
-if d.get("__combined__"):
-    keys = d.get("keys", [])
-    repo = d.get("repo", "?")
-    total = d.get("total_commits", 0)
-    summaries = d.get("summaries", {}) or {}
-    # Callback data has a hard 64-byte limit. Drop ticket keys if we exceed.
+jira_site = os.environ.get("JIRA_SITE", "")
+chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+entries = []
+combined = None
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    d = json.loads(raw)
+    if d.get("__combined__"):
+        combined = d
+    else:
+        entries.append(d)
+
+if not entries and not combined:
+    print("")
+    raise SystemExit(0)
+
+lines = []
+kb_rows = []
+
+# "Combine all" button at the top if available
+if combined:
+    keys = list(combined.get("keys", []))
+    repo = combined.get("repo", "?")
+    total = combined.get("total_commits", 0)
     joined = ",".join(keys)
     while len(f"tk_cherryall:{repo}:{joined}".encode()) > 64 and len(keys) > 2:
         keys = keys[:-1]
         joined = ",".join(keys)
-    lines = [f"Cherry-pick all {len(d.get('keys',[]))} tickets to main ({repo}):"]
-    for k in d.get("keys", []):
-        s = summaries.get(k) or ""
-        lines.append(f"• {k} — {s}" if s else f"• {k}")
-    lines.append(f"\nTotal commits to replay: {total}")
-    lines.append("One branch, one MR to main.")
-    text = "\n".join(lines)
-    kb = {"inline_keyboard": [[
-        {"text": f"Cherry-pick ALL {len(keys)} to main",
-         "callback_data": f"tk_cherryall:{repo}:{joined}"},
-    ]]}
-    print(json.dumps({"chat_id": chat_id, "text": text, "reply_markup": kb}))
-    sys.exit(0)
+    kb_rows.append([{
+        "text": f"Combine all {len(combined.get('keys',[]))} into one MR",
+        "callback_data": f"tk_cherryall:{repo}:{joined}",
+    }])
 
-# --- per-ticket card ------------------------------------------------------
-repos_str = ", ".join(d.get("repos", [])) or "?"
-open_mr = d.get("open_main_mr") or None
+lines.append(f"Cherry-pick to main — {len(entries)} ticket(s):")
+lines.append("")
 
-if open_mr:
-    text = (f"{d['key']} [{d.get('status','?')}] — {d['summary']}\n"
-            f"Already has open promote MR → main: !{open_mr['iid']}\n"
-            f"Repo: {open_mr.get('repo','?')}")
-    buttons_row1 = [
-        {"text": "DM Approver", "callback_data": f"rel_dm:{d['key']}"},
-        {"text": "Open MR",     "url": open_mr["web_url"]},
-    ]
-    buttons_row2 = [
-        {"text": "Open in Jira", "url": f"{jira_site}/browse/{d['key']}"},
-    ]
-    kb = {"inline_keyboard": [buttons_row1, buttons_row2]}
-else:
-    text = (f"{d['key']} [{d.get('status','?')}] — {d['summary']}\n"
-            f"Repos: {repos_str} • {d['commit_count']} commit(s) pending on stage\n"
-            f"Assignee: {d.get('assignee','?')}\n"
-            f"Latest: {d['latest_subject']}")
-    kb = {"inline_keyboard": [
-        [{"text": "Cherry-pick to main", "callback_data": f"tk_cherry:{d['key']}"},
-         {"text": "Open in Jira",        "url": f"{jira_site}/browse/{d['key']}"}]
-    ]}
-print(json.dumps({"chat_id": chat_id, "text": text, "reply_markup": kb}))
+for d in entries:
+    open_mr = d.get("open_main_mr") or None
+    summary = d.get("summary", "")
+    status = d.get("status", "?")
+    repos_str = ", ".join(d.get("repos", [])) or "?"
+    commits = d.get("commit_count", 0)
+
+    if open_mr:
+        lines.append(f"• {d['key']} [{status}] — {summary}")
+        lines.append(f"  Open MR → main: !{open_mr['iid']}")
+        kb_rows.append([
+            {"text": f"DM Approver ({d['key']})", "callback_data": f"rel_dm:{d['key']}"},
+            {"text": "Open MR", "url": open_mr["web_url"]},
+        ])
+    else:
+        lines.append(f"• {d['key']} [{status}] — {summary}")
+        lines.append(f"  {repos_str} • {commits} commit(s)")
+        kb_rows.append([
+            {"text": f"Cherry-pick {d['key']}", "callback_data": f"tk_cherry:{d['key']}"},
+            {"text": "Jira", "url": f"{jira_site}/browse/{d['key']}"},
+        ])
+
+text = "\n".join(lines)
+kb = {"inline_keyboard": kb_rows}
+print(json.dumps({"chat_id": int(chat_id), "text": text, "reply_markup": kb}))
 PYE
-          )
+        )
+        if [ -n "$RENDER" ]; then
           send_telegram_raw "$RENDER"
-        done
+        fi
       else
         send_telegram "Unexpected output from cherries check:
 $CHERRIES_RESULT"
@@ -2399,6 +2456,99 @@ PYEOF
       else
         send_telegram "Ship failed:
 $SHIP_RESULT"
+      fi
+      ;;
+
+    tk_merge\ *)
+      # tk_merge <ticket_key> — find approved open MR, merge to stage.
+      TK_KEY=$(echo "$CMD" | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+      send_telegram "Merging $TK_KEY… (finding MR, verifying approval)"
+      MERGE_RESULT=$(
+        TK_KEY="$TK_KEY" \
+        CONFIG_PATH="$SKILL_DIR/config.json" \
+        python3 <<'PYEOF' 2>&1
+import os, json, subprocess, urllib.parse
+
+TK_KEY = os.environ["TK_KEY"]
+config = json.load(open(os.environ["CONFIG_PATH"]))
+_proj0 = (config.get("projects") or [{}])[0] if isinstance(config.get("projects"), list) else {}
+repos = config.get("repositories") or _proj0.get("repositories") or {}
+
+def run(cmd, cwd=None, timeout=30):
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
+
+found = None
+for slug, meta in repos.items():
+    local = meta.get("localPath")
+    if not local or not os.path.isdir(local):
+        continue
+    rc, out, err = run(["glab", "mr", "list", "--search", TK_KEY,
+                        "--state", "opened", "--output", "json"], cwd=local)
+    try:
+        mrs = json.loads(out or "[]")
+    except Exception:
+        mrs = []
+    for m in mrs:
+        branch = (m.get("source_branch","") or "")
+        title = (m.get("title","") or "")
+        if TK_KEY in branch or TK_KEY in title:
+            found = {
+                "repo": slug, "local": local,
+                "project": meta.get("gitlabProject"),
+                "iid": m.get("iid"), "web_url": m.get("web_url"),
+                "target_branch": m.get("target_branch"),
+            }
+            break
+    if found:
+        break
+
+if not found:
+    print(f"ERR: no open MR found for {TK_KEY}")
+    raise SystemExit(1)
+
+proj_enc = urllib.parse.quote(found["project"], safe="")
+
+rc, out, err = run(["glab", "api",
+                    f"projects/{proj_enc}/merge_requests/{found['iid']}/approvals"])
+if rc != 0:
+    print(f"ERR: approvals fetch failed: {err[:200]}")
+    raise SystemExit(1)
+ap = json.loads(out)
+approved_by = [a.get("user",{}).get("username","?") for a in (ap.get("approved_by") or [])]
+left = ap.get("approvals_left")
+is_approved = (ap.get("approved") is True
+               or (isinstance(left, int) and left == 0)
+               or (approved_by and left is None))
+
+if not is_approved:
+    print(f"ERR: !{found['iid']} not approved (approvals_left={left})")
+    raise SystemExit(1)
+
+rc, out, err = run(["glab", "api", "--method", "PUT",
+                    f"projects/{proj_enc}/merge_requests/{found['iid']}/merge",
+                    "--field", "should_remove_source_branch=true",
+                    "--field", "merge_when_pipeline_succeeds=true"])
+if rc != 0:
+    rc2, out2, err2 = run(["glab", "api", "--method", "PUT",
+                           f"projects/{proj_enc}/merge_requests/{found['iid']}/merge",
+                           "--field", "should_remove_source_branch=true"])
+    if rc2 != 0:
+        print(f"ERR: merge failed: {(err2 or err)[:300]}")
+        raise SystemExit(1)
+    out = out2
+
+state = json.loads(out or "{}").get("state", "unknown")
+target = found.get("target_branch", "stage")
+print(f"OK: merged !{found['iid']} ({found['repo']}) to {target} — {TK_KEY}")
+PYEOF
+      )
+      if printf '%s\n' "$MERGE_RESULT" | grep -q '^OK:'; then
+        MERGE_OK=$(printf '%s\n' "$MERGE_RESULT" | grep '^OK:' | tail -1)
+        send_telegram "$MERGE_OK"
+      else
+        send_telegram "Merge failed:
+$MERGE_RESULT"
       fi
       ;;
 

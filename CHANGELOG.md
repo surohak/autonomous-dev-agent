@@ -3,6 +3,25 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.28] - 2026-04-23
+
+### Changed
+
+- **`/cherries` consolidated into single message**: instead of one
+  Telegram message per ticket + a separate combined card, the command
+  now sends a single message listing all eligible tickets with a
+  `[Combine all into one MR]` button at the top and per-ticket
+  `[Cherry-pick KEY]` / `[Jira]` buttons below.
+
+### Added
+
+- **`/merge UA-XXX` command**: merges an approved open MR to stage in
+  one tap. Also available as an inline `[Merge to stage]` button.
+- **Watcher detects merge-ready MRs**: when a ticket is in Ready For
+  QA or Ready For RC with an approved but unmerged MR, the watcher
+  sends a notification with `[Merge to stage]` / `[Open MR]` /
+  `[Open in Jira]` / `[Later]` buttons.
+
 ## [1.0.27] - 2026-04-23
 
 ### Fixed

@@ -48,9 +48,10 @@ Code review (/reviews)
 - Re-review detection is automatic — the round number shows in the card
   (round 2, 3, …) after the dev pushes fixes and re-assigns.
 
-Promote to main
-- /cherries — Done tickets not yet on main, each with [Cherry-pick to main]
-- /cherry PROJ-XXX — cherry-pick now
+Merge & Promote
+- /merge UA-XXX — merge approved MR to stage
+- /cherries — Done tickets not yet on main (combined view)
+- /cherry PROJ-XXX — cherry-pick to main
 
 Tempo (worklog suggestions + summary)
 - /tempo — suggestions for yesterday (one card per ticket×day)
