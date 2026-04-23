@@ -412,6 +412,20 @@ def _run():
             msgs.append({'text': f'tm_editapply {ticket} {date} {payload}'})
             continue
 
+        # 2d2) Slack ask force-reply
+        m = re.match(r'^Slack ask (C[A-Z0-9]+|D[A-Z0-9]+) ([0-9.]+):', reply_text)
+        if m:
+            ch, ts = m.group(1), m.group(2)
+            msgs.append({'text': f'sl_askapply {ch} {ts} {text}'})
+            continue
+
+        # 2d3) Slack reply force-reply
+        m = re.match(r'^Slack reply (C[A-Z0-9]+|D[A-Z0-9]+) ([0-9.]+):', reply_text)
+        if m:
+            ch, ts = m.group(1), m.group(2)
+            msgs.append({'text': f'sl_replyapply {ch} {ts} {text}'})
+            continue
+
         # 2d) chat continuation
         if reply_text.startswith(('Thinking', 'Agent:', 'Chat reply')):
             msgs.append({'text': f'ask {text}'})
@@ -3062,6 +3076,252 @@ PY
         handler_tm_edit_reply "How long for ${TM_TK} on ${TM_DT}? " "$TM_DUR"
       else
         send_telegram "tm_editapply: malformed payload — expected 'tm_editapply <ticket> <YYYY-MM-DD> <duration>'"
+      fi
+      ;;
+
+    # === Slack hotfix callbacks ===
+
+    sl_fix\ *)
+      # sl_fix <channel> <dedup_key> — launch an agent to fix the Slack-reported bug
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_DEDUP" ] && { tg_answer_callback "$CB_ID" "Missing data"; continue; }
+
+      tg_answer_callback "$CB_ID" "Preparing hotfix…"
+
+      # Read the full thread for context
+      SL_THREAD_JSON=$(python3 "$SKILL_DIR/scripts/read-slack.py" thread \
+        "$SL_CHANNEL" "$SL_DEDUP" 2>/dev/null || echo '{"ok":false}')
+
+      if ! echo "$SL_THREAD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+        tg_send "Failed to read Slack thread ($SL_CHANNEL / $SL_DEDUP)"
+        continue
+      fi
+
+      # Build SLACK_CONTEXT from thread messages
+      SLACK_CTX=$(echo "$SL_THREAD_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+parts = []
+for m in data.get('messages', []):
+    who = m.get('user_name', m.get('user', '?'))
+    txt = m.get('text', '')
+    parts.append(f'{who}: {txt}')
+print('\n---\n'.join(parts))
+" 2>/dev/null)
+
+      # Download images if any
+      SL_IMAGES=""
+      SL_IMG_DIR="${CACHE_DIR}/slack-images/${SL_CHANNEL}-${SL_DEDUP}"
+      SL_FILE_LIST=$(echo "$SL_THREAD_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+files = []
+for m in data.get('messages', []):
+    for f in m.get('files', []):
+        if f.get('url'):
+            files.append(f)
+print(json.dumps(files))
+" 2>/dev/null)
+
+      if [ -n "$SL_FILE_LIST" ] && [ "$SL_FILE_LIST" != "[]" ]; then
+        SL_FLIST_PATH="/tmp/sl_files_${SL_DEDUP}.json"
+        echo "$SL_FILE_LIST" > "$SL_FLIST_PATH"
+        python3 "$SKILL_DIR/scripts/read-slack.py" download-files \
+          "$SL_FLIST_PATH" "$SL_IMG_DIR" 2>>"$LOG_FILE" >/dev/null
+        rm -f "$SL_FLIST_PATH"
+        if [ -d "$SL_IMG_DIR" ]; then
+          SL_IMAGES=$(ls "$SL_IMG_DIR"/* 2>/dev/null | head -20 | tr '\n' ' ')
+        fi
+      fi
+
+      # Detect Jira ticket key in the thread text
+      SL_TICKET=$(echo "$SLACK_CTX" | python3 -c "
+import sys, re
+text = sys.stdin.read()
+m = re.search(r'\b([A-Z][A-Z0-9]+-\d+)\b', text)
+print(m.group(1) if m else '')
+" 2>/dev/null)
+
+      # Update Slack state to "fixing"
+      SL_STATE_FILE="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+      SL_STATE_KEY="${SL_CHANNEL}:${SL_DEDUP}"
+      python3 -c "
+import json, tempfile, os
+sf = '$SL_STATE_FILE'
+try: s = json.load(open(sf))
+except: s = {}
+seen = s.setdefault('seen', {})
+entry = seen.get('$SL_STATE_KEY', {})
+if isinstance(entry, dict):
+    entry['status'] = 'fixing'
+    seen['$SL_STATE_KEY'] = entry
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+" 2>/dev/null
+
+      # Export context and spawn agent
+      export SLACK_CONTEXT="$SLACK_CTX"
+      export SLACK_IMAGES="$SL_IMAGES"
+      export SLACK_TICKET="${SL_TICKET:-}"
+      export SLACK_CHANNEL="$SL_CHANNEL"
+      export SLACK_THREAD_TS="$SL_DEDUP"
+      _spawn_agent "slack-hotfix" "Launching Slack hotfix agent for ${SL_TICKET:-$SL_CHANNEL}…"
+      unset SLACK_CONTEXT SLACK_IMAGES SLACK_TICKET SLACK_CHANNEL SLACK_THREAD_TS
+
+      # Edit original card to show "fixing" status
+      if [ -n "$CB_MSG_ID" ]; then
+        tg_edit_text "$CB_MSG_ID" "Fixing: ${SL_TICKET:-thread} — agent spawned"
+      fi
+      ;;
+
+    sl_ask\ *)
+      # sl_ask <channel> <dedup_key> — ask the reporter a clarifying question
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_DEDUP" ] && { tg_answer_callback "$CB_ID" "Missing data"; continue; }
+
+      tg_answer_callback "$CB_ID" "Type your question…"
+      send_force_reply "Slack ask ${SL_CHANNEL} ${SL_DEDUP}:"
+
+      # Update state to "asking"
+      SL_STATE_FILE="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+      SL_STATE_KEY="${SL_CHANNEL}:${SL_DEDUP}"
+      python3 -c "
+import json, tempfile, os
+sf = '$SL_STATE_FILE'
+try: s = json.load(open(sf))
+except: s = {}
+seen = s.setdefault('seen', {})
+entry = seen.get('$SL_STATE_KEY', {})
+if isinstance(entry, dict):
+    entry['status'] = 'asking'
+    seen['$SL_STATE_KEY'] = entry
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+" 2>/dev/null
+      ;;
+
+    sl_reply\ *)
+      # sl_reply <channel> <dedup_key> — reply to the Slack thread (type your message)
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_DEDUP" ] && { tg_answer_callback "$CB_ID" "Missing data"; continue; }
+
+      tg_answer_callback "$CB_ID" "Type your reply…"
+      send_force_reply "Slack reply ${SL_CHANNEL} ${SL_DEDUP}:"
+      ;;
+
+    sl_ign\ *)
+      # sl_ign <channel> <dedup_key> — mark this Slack message as ignored
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_DEDUP" ] && { tg_answer_callback "$CB_ID" "Missing data"; continue; }
+
+      tg_answer_callback "$CB_ID" "Ignored"
+
+      # Update state
+      SL_STATE_FILE="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+      SL_STATE_KEY="${SL_CHANNEL}:${SL_DEDUP}"
+      python3 -c "
+import json, tempfile, os
+sf = '$SL_STATE_FILE'
+try: s = json.load(open(sf))
+except: s = {}
+seen = s.setdefault('seen', {})
+entry = seen.get('$SL_STATE_KEY', {})
+if isinstance(entry, dict):
+    entry['status'] = 'ignored'
+    seen['$SL_STATE_KEY'] = entry
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+" 2>/dev/null
+
+      if [ -n "$CB_MSG_ID" ]; then
+        tg_edit_text "$CB_MSG_ID" "Ignored — Slack message dismissed"
+      fi
+      ;;
+
+    sl_askapply\ *)
+      # sl_askapply <channel> <dedup_key> <question text>
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      SL_QUESTION=$(echo "$CMD" | cut -d' ' -f4-)
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_QUESTION" ] && { tg_send "Missing channel or question"; continue; }
+
+      python3 "$SKILL_DIR/scripts/send-slack-dm.py" \
+        --channel "$SL_CHANNEL" \
+        --thread_ts "$SL_DEDUP" \
+        --message "$SL_QUESTION" 2>>"$LOG_FILE"
+      SL_RC=$?
+
+      if [ "$SL_RC" -eq 0 ]; then
+        tg_send "Question posted in Slack thread. I'll watch for their reply."
+      else
+        tg_send "Failed to post question in Slack (rc=$SL_RC)"
+      fi
+      ;;
+
+    sl_replyapply\ *)
+      # sl_replyapply <channel> <dedup_key> <reply text>
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      SL_REPLY_TEXT=$(echo "$CMD" | cut -d' ' -f4-)
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_REPLY_TEXT" ] && { tg_send "Missing channel or reply text"; continue; }
+
+      python3 "$SKILL_DIR/scripts/send-slack-dm.py" \
+        --channel "$SL_CHANNEL" \
+        --thread_ts "$SL_DEDUP" \
+        --message "$SL_REPLY_TEXT" 2>>"$LOG_FILE"
+      SL_RC=$?
+
+      if [ "$SL_RC" -eq 0 ]; then
+        tg_send "Reply posted in Slack thread."
+      else
+        tg_send "Failed to post reply in Slack (rc=$SL_RC)"
+      fi
+      ;;
+
+    sl_notify\ *)
+      # sl_notify <channel> <dedup_key> <mr_url> — post MR link in the Slack thread
+      SL_CHANNEL=$(echo "$CMD" | awk '{print $2}')
+      SL_DEDUP=$(echo "$CMD" | awk '{print $3}')
+      SL_MR_URL=$(echo "$CMD" | cut -d' ' -f4-)
+      [ -z "$SL_CHANNEL" ] || [ -z "$SL_DEDUP" ] && { tg_answer_callback "$CB_ID" "Missing data"; continue; }
+
+      SL_MSG="A fix has been submitted: ${SL_MR_URL:-see MR}
+Please review and let me know if you need anything else."
+
+      python3 "$SKILL_DIR/scripts/send-slack-dm.py" \
+        --channel "$SL_CHANNEL" \
+        --thread_ts "$SL_DEDUP" \
+        --message "$SL_MSG" 2>>"$LOG_FILE"
+      SL_RC=$?
+
+      if [ "$SL_RC" -eq 0 ]; then
+        tg_send "Slack thread updated with MR link"
+        # Update state
+        SL_STATE_FILE="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+        SL_STATE_KEY="${SL_CHANNEL}:${SL_DEDUP}"
+        python3 -c "
+import json, tempfile, os
+sf = '$SL_STATE_FILE'
+try: s = json.load(open(sf))
+except: s = {}
+seen = s.setdefault('seen', {})
+entry = seen.get('$SL_STATE_KEY', {})
+if isinstance(entry, dict):
+    entry['status'] = 'notified_mr'
+    seen['$SL_STATE_KEY'] = entry
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+" 2>/dev/null
+      else
+        tg_send "Failed to post in Slack thread (rc=$SL_RC)"
       fi
       ;;
 

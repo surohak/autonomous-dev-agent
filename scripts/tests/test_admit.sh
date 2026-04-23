@@ -21,8 +21,8 @@ with locked_json('$ACTIVE_RUNS_FILE', {}) as ref:
 res=$(active_run_admit ticket PROJ-TEST1)
 [[ "$res" == DUPLICATE:1 ]] || { echo "expected DUPLICATE:1, got: $res"; exit 1; }
 
-# Case-insensitive dedup
-res=$(active_run_admit ticket ua-test1)
+# Case-insensitive dedup (lowercase version of the same key)
+res=$(active_run_admit ticket proj-test1)
 [[ "$res" == DUPLICATE:1 ]] || { echo "case-insensitive dedup broken: $res"; exit 1; }
 
 # --- 3. different ticket still admits ---

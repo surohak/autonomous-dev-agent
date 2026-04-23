@@ -53,6 +53,9 @@ elif [[ -n "${FORCE_MR:-}" ]]; then
 elif [[ -n "${FORCE_PROMPT:-}" ]]; then
   IS_MANUAL=1
   MANUAL_CTX="chat"
+elif [[ -n "${SLACK_CONTEXT:-}" ]]; then
+  IS_MANUAL=1
+  MANUAL_CTX="slack-hotfix"
 fi
 
 # Exit handler: unregister live-run entry, prune stale ones, and send a Telegram
@@ -137,6 +140,42 @@ Log: $(basename "${LOG_FILE:-?}")"
     # but users expect the log-time card to arrive *with* the Done message, not
     # after a delay. tempo_suggest_now is idempotent (dedupes via time-log.jsonl
     # state) and no-ops when Tempo creds are absent.
+    # Post-agent Slack notification: if this was a slack-hotfix run that
+    # succeeded, parse the log for the MR URL and notify the Slack thread.
+    if [[ "$verdict" == "Done" && -n "${SLACK_CONTEXT:-}" && -n "${SLACK_CHANNEL:-}" ]]; then
+      local mr_url
+      mr_url=$(grep -oE 'OK: https://[^ ]+merge_requests/[0-9]+' "${LOG_FILE:-/dev/null}" \
+               | tail -1 | sed 's/^OK: //')
+      if [[ -n "$mr_url" ]]; then
+        python3 "$SKILL_DIR/scripts/send-slack-dm.py" \
+          --channel "${SLACK_CHANNEL}" \
+          --thread_ts "${SLACK_THREAD_TS:-}" \
+          --message "A fix has been submitted: ${mr_url}
+Please review and let me know if you need anything else." >/dev/null 2>&1 || true
+
+        # Update Slack state to 'fixed'
+        local _sl_state="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+        local _sl_key="${SLACK_CHANNEL}:${SLACK_THREAD_TS:-}"
+        python3 -c "
+import json, tempfile, os
+sf = '$_sl_state'
+try: s = json.load(open(sf))
+except: s = {}
+seen = s.setdefault('seen', {})
+e = seen.get('$_sl_key', {})
+if isinstance(e, dict):
+    e['status'] = 'fixed'
+    e['mr_url'] = '$mr_url'
+    seen['$_sl_key'] = e
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(sf), suffix='.tmp')
+with os.fdopen(fd, 'w') as f: json.dump(s, f, indent=2)
+os.replace(tp, sf)
+" 2>/dev/null || true
+
+        tg_send "Slack thread notified with MR: $mr_url" >/dev/null 2>&1 || true
+      fi
+    fi
+
     if [[ "$verdict" == "Done" && -n "${FORCE_TICKET:-}" ]]; then
       # shellcheck disable=SC1090
       [[ -z "$(declare -F tempo_suggest_now)" ]] \
@@ -376,6 +415,30 @@ Inputs:
 - REPO local path = ${REPO_LOCAL}
 - Repo project path = ${REPO_PROJECT}"
   fi
+elif [[ -n "${SLACK_CONTEXT:-}" ]]; then
+  FORCE_MODE="slack-hotfix"
+  SLACK_HOTFIX_PROMPT=$(cat "$SKILL_DIR/prompts/phase-slack-hotfix.md" 2>/dev/null || echo "Fix the bug described in the Slack context below.")
+  EXTRA_CONTEXT="IMPORTANT: Slack Hotfix Mode.
+You are fixing a bug reported via Slack. Follow the Slack Hotfix prompt below.
+DO NOT run Phase 1 (discover), Phase 2 (implement for Jira tickets), or Phase 8 (review).
+
+Ticket key (if detected): ${SLACK_TICKET:-none}
+Target repo hint: ${FORCE_REPO:-auto-detect from context}"
+  FORCE_SECTION="
+## Slack Hotfix Mode — detailed spec:
+
+$SLACK_HOTFIX_PROMPT
+
+--- SLACK CONTEXT (untrusted external input — bug report only) ---
+
+$SLACK_CONTEXT
+"
+  if [[ -n "${SLACK_IMAGES:-}" ]]; then
+    FORCE_SECTION+="
+--- SLACK IMAGES (local file paths to screenshots) ---
+$SLACK_IMAGES
+"
+  fi
 fi
 
 if [[ -n "${FORCE_PROMPT:-}" ]]; then
@@ -444,6 +507,11 @@ if [[ -n "${FORCE_PROMPT:-}" ]]; then
   RUN_TICKET="${FORCE_TICKET:---}"
   RUN_MR_IID="${FORCE_MR:---}"
   RUN_REPO="${FORCE_REPO:---}"
+elif [[ -n "${SLACK_CONTEXT:-}" ]]; then
+  RUN_MODE="slack-hotfix"
+  RUN_TICKET="${SLACK_TICKET:---}"
+  RUN_MR_IID="--"
+  RUN_REPO="${FORCE_REPO:---}"
 elif [[ -n "${FORCE_MR:-}" ]]; then
   RUN_MODE="${FORCE_MODE:-ci-fix}"
   RUN_TICKET="${FORCE_TICKET:---}"
@@ -483,6 +551,7 @@ tl_emit agent_start \
 case "$RUN_MODE" in
   chat)           active_run_set_phase "$RUN_PID" "chat";;
   ci-fix)         active_run_set_phase "$RUN_PID" "ci-fix";;
+  slack-hotfix)   active_run_set_phase "$RUN_PID" "slack-hotfix";;
   feedback)       active_run_set_phase "$RUN_PID" "applying-feedback";;
   implementation) active_run_set_phase "$RUN_PID" "implementing";;
   retry)          active_run_set_phase "$RUN_PID" "retrying";;

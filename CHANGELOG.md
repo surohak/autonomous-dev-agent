@@ -3,6 +3,45 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.30] - 2026-04-23
+
+### Added
+
+- **Slack hotfix automation**: end-to-end flow that monitors Slack
+  channels/DMs for bug reports, surfaces them as Telegram cards with
+  `[Fix this]` / `[Ask Reporter]` / `[Reply only]` / `[Ignore]` buttons,
+  spawns an agent to fix the bug and open an MR to stage, and
+  automatically replies in the Slack thread with the MR link.
+- **`scripts/read-slack.py`**: new script for reading Slack messages
+  (conversations.history + conversations.replies) and downloading
+  file attachments (screenshots). Uses the same Cursor OAuth token
+  decryption as send-slack-dm.py.
+- **`prompts/phase-slack-hotfix.md`**: agent prompt for Slack hotfix
+  mode with prompt injection protection, repo auto-detection, and
+  ticket key handling.
+- **`slack.monitor` config section**: channels, keywords, and
+  ignoreUsers configuration in config.json for Slack monitoring.
+- **`FORCE_MODE=slack-hotfix` in run-agent.sh**: new agent mode that
+  passes Slack thread context and downloaded images to the agent.
+- **Post-agent Slack notification**: on successful slack-hotfix run,
+  the exit handler parses the log for the MR URL and replies in the
+  original Slack thread automatically.
+- **Watcher Slack monitoring section**: polls configured channels
+  every cycle, filters by keywords, deduplicates with state tracking
+  in watcher-state-slack.json, and sends Telegram notification cards.
+  Includes first-run guard (no backfill), token unavailability handling,
+  and 7-day auto-pruning of seen messages.
+
+### Changed
+
+- **`send-slack-dm.py`**: extended with `--thread_ts` parameter for
+  replying in Slack threads (used by Ask Reporter and MR notification
+  flows).
+- **`telegram-handler.sh`**: added `sl_fix`, `sl_ask`, `sl_ign`,
+  `sl_reply`, `sl_notify`, `sl_askapply`, and `sl_replyapply` callback
+  handlers for the Slack hotfix Telegram card buttons and force-reply
+  interactions.
+
 ## [1.0.29] - 2026-04-23
 
 ### Added

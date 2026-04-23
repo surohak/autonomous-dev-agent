@@ -186,21 +186,19 @@ def _refresh_access_token(creds: dict) -> dict | None:
     return new
 
 
-def _send_dm(channel_id: str, message: str) -> tuple[bool, str, dict]:
+def _send_dm(channel_id: str, message: str, *,
+             thread_ts: str | None = None) -> tuple[bool, str, dict]:
     creds = _load_slack_credentials()
-    r = _slack_post("chat.postMessage", {
-        "channel": channel_id,
-        "text":    message,
-    }, creds["access_token"])
+    fields: dict = {"channel": channel_id, "text": message}
+    if thread_ts:
+        fields["thread_ts"] = thread_ts
+    r = _slack_post("chat.postMessage", fields, creds["access_token"])
     if r.get("ok"):
         return True, "", r
-    # Retry once after refresh if auth-related
     if r.get("error") in ("invalid_auth", "token_expired", "not_authed"):
         fresh = _refresh_access_token(creds)
         if fresh:
-            r = _slack_post("chat.postMessage", {
-                "channel": channel_id, "text": message,
-            }, fresh["access_token"])
+            r = _slack_post("chat.postMessage", fields, fresh["access_token"])
             if r.get("ok"):
                 return True, "", r
     return False, r.get("error") or "unknown", r
@@ -274,6 +272,7 @@ def main() -> int:
     ap.add_argument("--all",     action="store_true", help="Drain the whole queue")
     ap.add_argument("--channel", help="Ad-hoc: Slack channel/user ID")
     ap.add_argument("--message", help="Ad-hoc: message body")
+    ap.add_argument("--thread_ts", help="Reply in a thread (Slack thread timestamp)")
     args = ap.parse_args()
 
     # Env shortcuts used by the Telegram handler
@@ -283,7 +282,8 @@ def main() -> int:
         args.all = True
 
     if args.channel and args.message:
-        ok, err, resp = _send_dm(args.channel, args.message)
+        ok, err, resp = _send_dm(args.channel, args.message,
+                                  thread_ts=args.thread_ts)
         if ok:
             print(f"OK: {args.channel} (ts={resp.get('ts')})")
             return 0

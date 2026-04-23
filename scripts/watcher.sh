@@ -568,7 +568,11 @@ print(f'{tk}\t{username}\t{name}\t{slack_id}\t{age_hours:.1f}\t{mr_url}')
     CUR_LOW_RV=$(printf '%s' "${CUR_ST_RV:-}" | tr '[:upper:]' '[:lower:]')
     [[ "$CUR_LOW_RV" != *"code review"* ]] && continue
 
-    # Check if age >= 24h
+    # Check if age >= 24h (guard against non-numeric AGE_HOURS from tab-split issues)
+    if ! [[ "$AGE_HOURS" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      echo "  [review-nudge] !$MR_IID — skipping: AGE_HOURS='${AGE_HOURS:0:60}' is not numeric" >> "$LOG_FILE"
+      continue
+    fi
     AGE_H_INT=$(printf '%.0f' "$AGE_HOURS")
     [ "$AGE_H_INT" -lt 24 ] 2>/dev/null && continue
 
@@ -915,6 +919,176 @@ else:
     echo "  [watchdog] agent bounced and kickstarted" >> "$LOG_FILE"
     tg_send "Watchdog: agent launchd job was stuck — bounced and kickstarted." >/dev/null 2>&1 || true
   fi
+fi
+
+# =============================================================================
+# 3. Slack message monitor
+# =============================================================================
+#
+# Poll configured Slack channels/DMs for new messages from others. Surface
+# actionable messages as Telegram cards with Fix/Ask/Ignore buttons.
+# Uses read-slack.py which reuses Cursor's OAuth tokens (no separate bot token).
+# Exits gracefully (code 3) if tokens are unavailable.
+
+SLACK_CHANNELS=$(cfg_get "['slack']['monitor']['channels']" 2>/dev/null || echo "[]")
+SLACK_KEYWORDS=$(cfg_get "['slack']['monitor']['keywords']" 2>/dev/null || echo "[]")
+SLACK_IGNORE=$(cfg_get "['slack']['monitor']['ignoreUsers']" 2>/dev/null || echo "[]")
+OWNER_SLACK_ID=$(cfg_get "['owner']['slackUserId']" 2>/dev/null || echo "")
+
+# Parse channels list from JSON array to comma-separated
+SLACK_CH_CSV=$(echo "$SLACK_CHANNELS" | python3 -c "
+import sys, json
+try:
+    ch = json.load(sys.stdin)
+    if isinstance(ch, list) and ch:
+        print(','.join(ch))
+    else:
+        print('')
+except: print('')
+" 2>/dev/null)
+
+if [ -n "$SLACK_CH_CSV" ]; then
+  echo "  [slack] monitoring channels: $SLACK_CH_CSV" >> "$LOG_FILE"
+
+  # Get last poll timestamp from state (per-project state file or global)
+  SLACK_LAST_TS=$(python3 -c "
+import json
+try:
+    s = json.load(open('${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json'))
+    print(s.get('last_ts', ''))
+except: print('')
+" 2>/dev/null)
+
+  # First-run guard: if no last_ts, set to now (don't backfill old messages)
+  if [ -z "$SLACK_LAST_TS" ]; then
+    SLACK_LAST_TS=$(python3 -c "import time; print(str(time.time()))")
+    echo "  [slack] first run — setting last_ts to now ($SLACK_LAST_TS), no backfill" >> "$LOG_FILE"
+  fi
+
+  SLACK_STATE_FILE="${GLOBAL_CACHE_DIR:-$CACHE_DIR}/watcher-state-slack.json"
+  mkdir -p "$(dirname "$SLACK_STATE_FILE")"
+
+  # Poll for new messages
+  SLACK_RESULT=$(python3 "$SKILL_DIR/scripts/read-slack.py" poll \
+    --channels "$SLACK_CH_CSV" \
+    --oldest "$SLACK_LAST_TS" 2>>"$LOG_FILE")
+  SLACK_RC=$?
+
+  if [ "$SLACK_RC" -eq 3 ]; then
+    echo "  [slack] SKIP: Slack token unavailable" >> "$LOG_FILE"
+  elif [ "$SLACK_RC" -ne 0 ]; then
+    echo "  [slack] SKIP: read-slack.py failed (rc=$SLACK_RC)" >> "$LOG_FILE"
+  elif [ -n "$SLACK_RESULT" ] && [ "$SLACK_RESULT" != "[]" ]; then
+    # Process messages: filter, deduplicate, build Telegram cards, update state
+    SLACK_CARDS=$(SLACK_RESULT="$SLACK_RESULT" \
+      SLACK_STATE="$SLACK_STATE_FILE" \
+      SLACK_KEYWORDS="$SLACK_KEYWORDS" \
+      SLACK_IGNORE="$SLACK_IGNORE" \
+      OWNER_SLACK_ID="$OWNER_SLACK_ID" \
+      JIRA_SITE="${JIRA_SITE:-}" \
+      python3 <<'SLACK_PY2' 2>>"$LOG_FILE"
+import os, json, time, tempfile
+
+messages = json.loads(os.environ.get("SLACK_RESULT", "[]"))
+state_path = os.environ["SLACK_STATE"]
+keywords = json.loads(os.environ.get("SLACK_KEYWORDS", "[]"))
+ignore_users = json.loads(os.environ.get("SLACK_IGNORE", "[]"))
+owner_slack = os.environ.get("OWNER_SLACK_ID", "")
+
+try:
+    state = json.load(open(state_path))
+except Exception:
+    state = {}
+seen = state.get("seen", {})
+
+max_ts = state.get("last_ts", "0")
+cards = []
+
+for msg in messages:
+    ts = msg.get("ts", "")
+    channel = msg.get("channel", "")
+    thread_ts = msg.get("thread_ts", "")
+    user = msg.get("user", "")
+    text = msg.get("text", "")
+    dedup_key = thread_ts if thread_ts else ts
+    state_key = f"{channel}:{dedup_key}"
+
+    if float(ts) > float(max_ts or "0"):
+        max_ts = ts
+
+    if state_key in seen:
+        continue
+    if user == owner_slack:
+        continue
+    if user in ignore_users:
+        continue
+    if keywords:
+        if not any(kw.lower() in text.lower() for kw in keywords):
+            continue
+
+    user_name = msg.get("user_name", user)
+    preview = text[:300] + ("…" if len(text) > 300 else "")
+    has_images = bool(msg.get("files"))
+    img_tag = " [has screenshots]" if has_images else ""
+
+    cb_fix = f"sl_fix:{channel}:{dedup_key}"
+    cb_ask = f"sl_ask:{channel}:{dedup_key}"
+    cb_reply = f"sl_reply:{channel}:{dedup_key}"
+    cb_ign = f"sl_ign:{channel}:{dedup_key}"
+    for cb in [cb_fix, cb_ask, cb_reply, cb_ign]:
+        if len(cb.encode()) > 64:
+            max_key_len = 64 - len(f"sl_reply:{channel}:".encode())
+            dedup_key = dedup_key[:max_key_len]
+            cb_fix = f"sl_fix:{channel}:{dedup_key}"
+            cb_ask = f"sl_ask:{channel}:{dedup_key}"
+            cb_reply = f"sl_reply:{channel}:{dedup_key}"
+            cb_ign = f"sl_ign:{channel}:{dedup_key}"
+            state_key = f"{channel}:{dedup_key}"
+            break
+
+    kb = json.dumps([
+        [{"text": "Fix this", "callback_data": cb_fix},
+         {"text": "Ask Reporter", "callback_data": cb_ask}],
+        [{"text": "Reply only", "callback_data": cb_reply},
+         {"text": "Ignore", "callback_data": cb_ign}],
+    ])
+    cards.append({"text": f"Slack from {user_name}{img_tag}:\n{preview}", "kb": kb})
+    seen[state_key] = {"status": "notified", "user": user, "user_name": user_name,
+                        "channel": channel, "dedup_key": dedup_key, "ts": ts,
+                        "notified_at": int(time.time()), "preview": text[:200]}
+
+cutoff = int(time.time()) - 7 * 86400
+state["seen"] = {k: v for k, v in seen.items()
+                 if not isinstance(v, dict) or v.get("notified_at", 0) > cutoff}
+state["last_ts"] = max_ts
+state["updated_at"] = int(time.time())
+fd, tp = tempfile.mkstemp(dir=os.path.dirname(state_path), suffix=".tmp")
+with os.fdopen(fd, "w") as f: json.dump(state, f, indent=2)
+os.replace(tp, state_path)
+print(json.dumps(cards))
+SLACK_PY2
+    )
+
+    # Send each card via Telegram
+    CARD_COUNT=$(echo "$SLACK_CARDS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+    echo "  [slack] new actionable messages: $CARD_COUNT" >> "$LOG_FILE"
+
+    if [ "$CARD_COUNT" != "0" ] && [ "$CARD_COUNT" != "" ]; then
+      echo "$SLACK_CARDS" | python3 -c "
+import sys, json
+cards = json.load(sys.stdin)
+for c in cards:
+    print(c['text'] + '\x01' + c['kb'])
+" 2>/dev/null | while IFS=$'\x01' read -r CARD_TEXT CARD_KB; do
+        [ -z "$CARD_TEXT" ] && continue
+        tg_send_maybe "$CARD_TEXT" "$CARD_KB"
+      done
+    fi
+  else
+    echo "  [slack] no new messages" >> "$LOG_FILE"
+  fi
+else
+  echo "  [slack] no channels configured — skip" >> "$LOG_FILE"
 fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Watcher done" >> "$LOG_FILE"

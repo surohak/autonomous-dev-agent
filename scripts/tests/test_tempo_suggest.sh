@@ -160,8 +160,8 @@ assert len(d) == 1 and d[0]["ticket"] == "PROJ-100", d
 print("scenario 8 OK")
 PY
 
-# Case-insensitive + whitespace-tolerant
-OUT=$(run_suggest --ticket "  ua-102  ")
+# Case-insensitive + whitespace-tolerant (lowercase of same PROJ- prefix)
+OUT=$(run_suggest --ticket "  proj-102  ")
 python3 - <<PY
 import json
 d = json.loads(r'''$OUT''')

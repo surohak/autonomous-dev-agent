@@ -34,6 +34,15 @@
     }
   },
 
+  "slack": {
+    "_comment": "Monitor Slack channels/DMs for bug reports. The watcher polls these channels every 2 minutes and surfaces new messages as Telegram cards with Fix/Ask/Ignore buttons. Channel IDs are the C.../D... part of Slack URLs.",
+    "monitor": {
+      "channels": [],
+      "keywords": ["bug", "issue", "broken", "not working", "error", "fix", "problem", "wrong", "failing"],
+      "ignoreUsers": []
+    }
+  },
+
   "releaseApprovers": [
     { "name": "Approver Name", "slackUserId": "", "email": "approver@example.com", "role": "Tech Lead" }
   ],
