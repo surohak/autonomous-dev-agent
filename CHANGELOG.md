@@ -3,6 +3,23 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.26] - 2026-04-23
+
+### Fixed
+
+- **Cursor IDE detection on macOS**: `pgrep -x "Cursor"` always failed
+  because macOS `pgrep` matches the full executable path, not the short
+  name. Changed to `pgrep -f "Cursor.app/Contents/MacOS/Cursor"` so the
+  agent correctly detects a running Cursor IDE and no longer skips runs.
+
+### Added
+
+- **Slack thread enrichment in Phase 2**: when the agent reads a Jira
+  ticket, it now scans the description and comments for Slack message
+  links and reads the full thread via `slack_read_thread` MCP. Thread
+  content is treated as first-class context for analysis and
+  implementation.
+
 ## [1.0.25] - 2026-04-22
 
 ### Added

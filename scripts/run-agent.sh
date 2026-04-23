@@ -174,8 +174,8 @@ if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
   exit 1
 fi
 
-# Check if Cursor is running
-if ! pgrep -x "Cursor" > /dev/null 2>&1; then
+# Check if Cursor is running (pgrep -x doesn't work on macOS — it matches full path)
+if ! pgrep -f "Cursor.app/Contents/MacOS/Cursor" > /dev/null 2>&1; then
   echo "Cursor IDE is not running. Skipping this run."
   RUN_SKIPPED=1; RUN_SKIP_REASON="Cursor IDE not running"
   exit 0

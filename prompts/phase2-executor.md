@@ -222,6 +222,22 @@ curl -s -u "${ATLASSIAN_EMAIL}:${ATLASSIAN_API_TOKEN}" \
 If it has a parent, also read the parent. Check ALL linked issues for existing
 branches, related MRs, and blockers. Search the codebase for referenced files.
 
+### Slack thread enrichment
+
+Scan the ticket description and ALL comments for Slack message links matching
+`https://<workspace>.slack.com/archives/<CHANNEL_ID>/p<TS_NO_DOT>`. For each:
+
+1. Extract `channel_id` from the path segment after `/archives/` (e.g. `C08LZHZRUGP`).
+2. Convert the `p`-prefixed timestamp to API format: drop the `p`, insert `.` before
+   the last 6 digits (e.g. `p1776868104759549` → `1776868104.759549`).
+3. Read the full thread:
+   ```
+   CallMcpTool: server=plugin-slack-slack, toolName=slack_read_thread
+   Args: { "channel_id": "<CHANNEL_ID>", "message_ts": "<TS>" }
+   ```
+4. Treat the thread content as first-class context — it often contains the real
+   requirements, screenshots, or discussion that the Jira ticket only links to.
+
 ## Step 2.5: Blocker Check (MANDATORY, before Decision Gate)
 
 Before touching a ticket from `New` / `To Do`, scan for signals that it is already

@@ -233,9 +233,20 @@ For every remaining ticket:
    curl -s -u "${ATLASSIAN_EMAIL}:${ATLASSIAN_API_TOKEN}" \
      "{{JIRA_SITE}}/rest/api/3/issue/{issueKey}?expand=renderedFields"
    ```
-2. **Check parent**: if it's a sub-task, read the parent story/epic
-3. **Check linked issues**: look for related tickets, blockers, and existing branches
-4. **Identify the repository**: based on labels, parent epic, or ticket content:
+2. **Read Slack threads**: Scan the ticket description and comments for Slack message links
+   (e.g. `https://<workspace>.slack.com/archives/<CHANNEL_ID>/p<TIMESTAMP>`). For each link:
+   - Extract `channel_id` from the URL path (e.g. `C08LZHZRUGP`)
+   - Extract `message_ts` by inserting a dot before the last 6 digits of the `p` value
+     (e.g. `p1776868104759549` → `1776868104.759549`)
+   - Read the full thread via Slack MCP:
+     ```
+     CallMcpTool: server=plugin-slack-slack, toolName=slack_read_thread
+     Args: { "channel_id": "<CHANNEL_ID>", "message_ts": "<TIMESTAMP>" }
+     ```
+   - Incorporate thread content as additional context for the ticket
+3. **Check parent**: if it's a sub-task, read the parent story/epic
+4. **Check linked issues**: look for related tickets, blockers, and existing branches
+5. **Identify the repository**: based on labels, parent epic, or ticket content:
    - LP/registration/experiment/campaign tickets → SSR repo
    - Blog/content/CMS tickets → Blog repo
    - Default: SSR repo
