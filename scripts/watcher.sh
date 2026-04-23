@@ -863,7 +863,11 @@ done   # STATUS_CHANGE / NEEDS_CLARIFICATION loop
 
   )  # end per-project subshell
   _project_rc=$?
-  if (( _project_rc != 0 )); then
+  if (( _project_rc == 143 || _project_rc == 130 )); then
+    # 143 = SIGTERM, 130 = SIGINT — normal shutdown signals, not a crash.
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] watcher stopping (signal $(( _project_rc - 128 )))" >> "$LOG_FILE"
+    exit 0
+  elif (( _project_rc != 0 )); then
     _project_error_reported "$_project_rc" "$AGENT_PROJECT"
   fi
 done   # outer per-project loop
