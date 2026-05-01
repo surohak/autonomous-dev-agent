@@ -76,6 +76,22 @@ _on_exit() {
   # Log housekeeping always runs (not just on success)
   ls -t "$LOG_DIR"/*.log 2>/dev/null | tail -n +51 | xargs rm -f 2>/dev/null || true
 
+  # Worktree cleanup: if the agent crashed or was killed, the worktree may
+  # still exist. Attempt removal so we don't accumulate orphaned trees.
+  if [[ -n "${FORCE_TICKET:-}" && -n "${SSR_REPO:-}" ]]; then
+    local _wt_slug="${FORCE_TICKET}"
+    for _wt_repo in "$SSR_REPO" "${BLOG_REPO:-}"; do
+      [[ -z "$_wt_repo" || ! -d "$_wt_repo" ]] && continue
+      local _wt_dir
+      _wt_dir="$(dirname "$_wt_repo")/$(basename "$_wt_repo")-${_wt_slug}"
+      if [[ -d "$_wt_dir" ]]; then
+        echo "Cleaning up leftover worktree: $_wt_dir"
+        git -C "$_wt_repo" worktree remove "$_wt_dir" --force 2>/dev/null \
+          || { rm -rf "$_wt_dir"; git -C "$_wt_repo" worktree prune 2>/dev/null || true; }
+      fi
+    done
+  fi
+
   # Elapsed time (human-readable)
   local end
   end=$(date +%s)
@@ -343,6 +359,7 @@ PROMPT_TEMPLATE=$(cat "$SKILL_DIR/SKILL.md")
 CONFIG=$(cat "$CONFIG_FILE")
 CODE_REVIEW_PROMPT=$(prompt_render "$SKILL_DIR/prompts/phase-codereview.md")
 CI_FIX_PROMPT=$(prompt_render "$SKILL_DIR/prompts/phase-cifix.md" 2>/dev/null || echo "")
+SELF_REVIEW_PROMPT=$(cat "$SKILL_DIR/prompts/phase-self-review.md" 2>/dev/null || echo "")
 
 # Build context for forced ticket / MR / retry mode
 EXTRA_CONTEXT=""
@@ -465,6 +482,10 @@ ${EXTRA_CONTEXT}
 
 $PROMPT_TEMPLATE
 
+## Self-Review (Phase 5.5) — detailed spec:
+
+$SELF_REVIEW_PROMPT
+
 ## Code Review Mode (Phase 8) — detailed spec:
 
 $CODE_REVIEW_PROMPT
@@ -582,6 +603,13 @@ RUN_MODEL="$AGENT_MODEL"
 if [[ "${RETRY_MODE:-}" == "true" ]]; then
   RUN_MODEL="${AGENT_MODEL_CIFIX:-$AGENT_MODEL}"
 fi
+
+# Export worktree base directory so the agent prompt (SKILL.md) knows where to
+# create per-ticket worktrees.  The base is the *parent* of the SSR repo's
+# localPath (e.g. /Users/sh/Desktop/portal-environment/services →
+# worktrees land as ../ssr-UA-1056 relative to the repo).
+export WORKTREE_BASE
+WORKTREE_BASE="$(dirname "${SSR_REPO}")"
 
 set +e
 agent -p --force --trust --approve-mcps \

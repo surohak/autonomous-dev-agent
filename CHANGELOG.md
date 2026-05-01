@@ -3,6 +3,35 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.33] - 2026-05-01
+
+### Added
+
+- **Git worktree-based task isolation**: Each ticket now gets its own worktree
+  (`../{repo}-{TICKET_KEY}`) instead of working in the main checkout. Enables
+  true parallel agent runs without git conflicts and keeps the main repo clean.
+- **Phase 5.5 — Self-review as Frontend Architect**: After opening the MR, the
+  agent reviews its own diff for completeness gaps (missing sibling pages,
+  dead code, architecture inconsistencies), applies fixes, and pushes — before
+  handing off to the human reviewer. Findings are included in the Telegram
+  notification.
+- **`prompts/phase-self-review.md`**: New prompt file with the self-review
+  checklist (completeness, architecture consistency, dead code, edge cases,
+  cross-MR awareness).
+- **Worktree cleanup in `_on_exit` trap** (`run-agent.sh`): Leftover worktrees
+  from crashed runs are automatically removed on agent exit.
+- **Orphaned worktree pruning** (`watcher.sh`): Every watcher cycle prunes
+  worktree directories older than 24 hours to prevent accumulation.
+
+### Changed
+
+- **Phase 4 (Implement)**: Restructured to create worktree before implementation,
+  perform all work inside it, and pass `WORKTREE_BASE` env var to the agent.
+- **Phase 5 (MR)**: Push and MR creation now run from within the worktree.
+- **Phase 6 (Notify)**: Telegram notification includes self-review summary line.
+- **Phase 7 (Monitor Code Review)**: Reviewer comment fixes use a fresh worktree
+  from the MR branch, then remove it after pushing.
+
 ## [1.0.32] - 2026-04-23
 
 ### Added

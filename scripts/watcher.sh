@@ -1095,6 +1095,32 @@ else
   echo "  [slack] no channels configured — skip" >> "$LOG_FILE"
 fi
 
+# =============================================================================
+# 4. Orphaned worktree cleanup
+# =============================================================================
+#
+# Agent runs create per-ticket worktrees (../ssr-UA-1056 etc.) and remove them
+# after the MR is finalized. If the agent crashes, orphans can accumulate.
+# Prune any worktree directories older than 24 hours.
+
+for _wt_repo in "$SSR_REPO" "${BLOG_REPO:-}"; do
+  [[ -z "$_wt_repo" || ! -d "$_wt_repo" ]] && continue
+  _wt_parent="$(dirname "$_wt_repo")"
+  _wt_basename="$(basename "$_wt_repo")"
+
+  # List worktree directories matching the pattern {repo}-{TICKET}
+  for _wt_dir in "$_wt_parent/${_wt_basename}"-*; do
+    [[ -d "$_wt_dir" ]] || continue
+    # Only prune if older than 24h (86400 seconds)
+    _wt_age=$(( $(date +%s) - $(stat -f '%m' "$_wt_dir" 2>/dev/null || echo "0") ))
+    if (( _wt_age > 86400 )); then
+      echo "  [worktree] pruning orphan: $_wt_dir (${_wt_age}s old)" >> "$LOG_FILE"
+      git -C "$_wt_repo" worktree remove "$_wt_dir" --force 2>/dev/null \
+        || { rm -rf "$_wt_dir"; git -C "$_wt_repo" worktree prune 2>/dev/null || true; }
+    fi
+  done
+done
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Watcher done" >> "$LOG_FILE"
 
 # v0.3.1 — rotate any log that has grown past LOG_ROTATE_THRESHOLD_BYTES
