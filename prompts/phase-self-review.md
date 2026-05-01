@@ -72,3 +72,6 @@ After the review, take one of these actions:
 
 **If the diff is clean:**
 - Set `SELF_REVIEW_SUMMARY` to `"Clean — no issues found"`
+- Continue immediately to worktree cleanup and Phase 6 (Notify).
+  Do NOT pause, stop, or wait for confirmation — a clean review means
+  the MR is ready for the human reviewer.
