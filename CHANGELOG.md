@@ -3,6 +3,15 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.35] - 2026-05-04
+
+### Fixed
+
+- **`/cherries` command silent failure**: The rendering stage used
+  `pipe | python3 <<'HEREDOC'` which caused bash to override stdin with the
+  heredoc — the Python script received zero data and sent nothing to Telegram.
+  Switched to passing cherry-pick data via `CHERRIES_JSON` environment variable.
+
 ## [1.0.33] - 2026-05-01
 
 ### Added

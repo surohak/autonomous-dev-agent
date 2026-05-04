@@ -1170,17 +1170,18 @@ PYEOF
       elif [[ "$CHERRIES_RESULT" == LIST* ]]; then
         # Render ALL entries into a single Telegram message with one
         # button per ticket + a "combine all" button at the top.
+        _cherries_json=$(printf '%s\n' "$CHERRIES_RESULT" | tail -n +2)
         RENDER=$(
-          printf '%s\n' "$CHERRIES_RESULT" | tail -n +2 | \
+          CHERRIES_JSON="$_cherries_json" \
           JIRA_SITE="$JIRA_SITE" TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
           python3 <<'PYE'
-import sys, json, os
+import json, os
 
 jira_site = os.environ.get("JIRA_SITE", "")
 chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 entries = []
 combined = None
-for raw in sys.stdin:
+for raw in os.environ.get("CHERRIES_JSON", "").splitlines():
     raw = raw.strip()
     if not raw:
         continue
