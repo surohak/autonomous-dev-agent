@@ -3,6 +3,16 @@
 All notable changes to this project are tracked here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.36] - 2026-05-08
+
+### Fixed
+
+- **Tempo "Log dev time?" cards not appearing**: `_tempo_emit_cards` had the
+  same pipe+heredoc stdin bug as `/cherries` — suggestion cards with
+  [Log] [Edit] [Skip] buttons were silently lost. Only the header text was
+  sent, forcing the user to reply manually. Now cards render correctly via
+  `TEMPO_RAW` env var, so buttons appear immediately after MR notifications.
+
 ## [1.0.35] - 2026-05-04
 
 ### Fixed

@@ -192,9 +192,9 @@ print(sum(1 for s in data if not s.get("skip")))
 
   [[ -n "$header" ]] && tg_send "$header"
 
-  printf '%s' "$raw" | python3 - <<'PY' | while IFS=$'\t' read -r ticket date seconds text_enc; do
-import json, sys
-data = json.load(sys.stdin)
+  TEMPO_RAW="$raw" python3 <<'PY' | while IFS=$'\t' read -r ticket date seconds text_enc; do
+import json, os
+data = json.loads(os.environ.get("TEMPO_RAW", "[]"))
 for s in data:
     if s.get("skip"):
         continue
